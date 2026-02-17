@@ -113,31 +113,45 @@ const DesktopDashboard: React.FC = () => {
     // Update unmatched immediately
     setBatchProgress(prev => ({ ...prev, unmatched: unmatchedCount }));
 
-    // 2. Execute in Parallel Batches
-    // Processing 5 files at a time greatly speeds up the upload compared to sequential
-    const BATCH_SIZE = 5; 
+    // 2. Execute with High-Speed Dynamic Concurrency Pool
+    // This removes the "batch wait" time. As soon as one upload finishes, the next starts.
+    const CONCURRENCY_LIMIT = 8; // Aggressive but safe for most browsers
     let processedCount = 0;
     let successCount = 0;
     let failCount = 0;
 
-    for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
-        const chunk = tasks.slice(i, i + BATCH_SIZE);
-        
-        await Promise.all(chunk.map(async (task) => {
-             const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
-             if (success) successCount++;
-             else failCount++;
-             processedCount++;
-             
-             // Update progress
-             setBatchProgress(prev => ({
+    const activePromises = new Set<Promise<void>>();
+
+    for (const task of tasks) {
+        // Create the promise
+        const promise = (async () => {
+            const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
+            if (success) successCount++;
+            else failCount++;
+            processedCount++;
+            
+            setBatchProgress(prev => ({
                  ...prev,
-                 current: processedCount + unmatchedCount, // Current progress includes skipped unmatched
+                 current: processedCount + unmatchedCount,
                  successes: successCount,
                  failed: failCount
-             }));
-        }));
+            }));
+        })();
+
+        // Add to pool
+        activePromises.add(promise);
+        
+        // Remove from pool when done
+        promise.then(() => activePromises.delete(promise));
+
+        // If pool is full, wait for the fastest one to finish
+        if (activePromises.size >= CONCURRENCY_LIMIT) {
+            await Promise.race(activePromises);
+        }
     }
+
+    // Wait for all remaining uploads
+    await Promise.all(activePromises);
 
     // Final Report
     const totalProcessed = tasks.length + unmatchedCount;
@@ -294,15 +308,13 @@ const DesktopDashboard: React.FC = () => {
                           <span className="font-semibold text-slate-800 text-sm truncate pr-2">{req.customerName}</span>
                           <div className="flex gap-2">
                              {activeTab === 'issues' && (
-                                <>
                                   <button onClick={(e) => handleRetry(req.id, e)} className="text-slate-400 hover:text-blue-500" title="Retry">
                                      <RotateCw className="w-3.5 h-3.5" />
                                   </button>
-                                  <button onClick={(e) => handleDeleteRequest(req.id, e)} className="text-slate-400 hover:text-red-500" title="Delete">
-                                     <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </>
                              )}
+                             <button onClick={(e) => handleDeleteRequest(req.id, e)} className="text-slate-400 hover:text-red-500" title="Delete">
+                                     <Trash2 className="w-3.5 h-3.5" />
+                             </button>
                           </div>
                         </div>
                         
