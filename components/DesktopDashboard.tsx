@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode } from 'lucide-react';
+import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw } from 'lucide-react';
 import { CustomerRequest } from '../types';
-import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, ServerFile, getWhatsAppStatus, WhatsAppStatus } from '../services/api';
+import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus } from '../services/api';
 import { formatDistanceToNow } from 'date-fns';
-import { MOTIVATIONAL_QUOTES } from '../constants';
-import { Link } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 
 type TabView = 'queue' | 'issues' | 'storage';
 
@@ -17,7 +16,7 @@ const DesktopDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabView>('queue');
   
   // Connection Status
-  const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ status: 'INITIALIZING', qr: null });
+  const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ status: 'INITIALIZING', qr: null, queueLength: 0 });
   const [showQr, setShowQr] = useState(false);
 
   // Batch Upload States
@@ -26,6 +25,7 @@ const DesktopDashboard: React.FC = () => {
   const [lastBatchReport, setLastBatchReport] = useState<{ message: string, type: 'success' | 'warning' } | null>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const navigate = useNavigate();
 
   const fetchData = useCallback(async () => {
     if (isProcessingBatch) return;
@@ -48,9 +48,8 @@ const DesktopDashboard: React.FC = () => {
     const statusInterval = setInterval(async () => {
         const status = await getWhatsAppStatus();
         setWaStatus(status);
-        // Auto-show QR if needed and not already showing
         if (status.status === 'QR_READY' && !showQr) {
-            // Optional: Auto open? Let's leave it manual to not be annoying
+            // Optional: Auto popup
         }
     }, 3000);
     return () => clearInterval(statusInterval);
@@ -63,6 +62,11 @@ const DesktopDashboard: React.FC = () => {
   }, [fetchData]);
 
   const normalize = (str: string) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const handleLogout = () => {
+      localStorage.removeItem('isAuthenticated');
+      navigate('/login');
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -78,56 +82,73 @@ const DesktopDashboard: React.FC = () => {
     setLastBatchReport(null);
     const fileList = Array.from(files) as File[];
     
-    setBatchProgress({
-      current: 0,
-      total: fileList.length,
-      successes: 0,
-      failed: 0,
-      unmatched: 0
-    });
+    // Reset stats
+    setBatchProgress({ current: 0, total: fileList.length, successes: 0, failed: 0, unmatched: 0 });
 
     const usedRequestIds = new Set<string>();
-    
-    let successes = 0;
-    let failed = 0;
-    let unmatched = 0;
+    const tasks: { file: File, request: CustomerRequest }[] = [];
+    let unmatchedCount = 0;
 
-    for (let i = 0; i < fileList.length; i++) {
-      const file = fileList[i];
-      setBatchProgress(prev => ({ ...prev, current: i + 1 }));
+    // 1. Prepare Tasks (Match files to requests) - Instant
+    for (const file of fileList) {
+        const rawFileName = file.name;
+        const nameWithoutExt = rawFileName.substring(0, rawFileName.lastIndexOf('.')) || rawFileName;
+        const normFileName = normalize(nameWithoutExt);
 
-      const rawFileName = file.name;
-      const nameWithoutExt = rawFileName.substring(0, rawFileName.lastIndexOf('.')) || rawFileName;
-      const normFileName = normalize(nameWithoutExt);
+        // Find match in queue
+        const match = requests.find(r => {
+            if (usedRequestIds.has(r.id) || r.status !== 'pending') return false;
+            const normVideoName = normalize(r.videoName);
+            return normFileName.includes(normVideoName) || normVideoName.includes(normFileName);
+        });
 
-      const match = requests.find(r => {
-        if (usedRequestIds.has(r.id) || r.status !== 'pending') return false;
-        const normVideoName = normalize(r.videoName);
-        return normFileName.includes(normVideoName) || normVideoName.includes(normFileName);
-      });
-
-      if (match) {
-        usedRequestIds.add(match.id);
-        const success = await uploadDocument(match.id, file, match.phoneNumber);
-        if (success) {
-          successes++;
-          setBatchProgress(prev => ({ ...prev, successes: prev.successes + 1 }));
+        if (match) {
+            usedRequestIds.add(match.id);
+            tasks.push({ file, request: match });
         } else {
-          failed++; 
-          setBatchProgress(prev => ({ ...prev, failed: prev.failed + 1 }));
+            unmatchedCount++;
         }
-      } else {
-        unmatched++;
-        setBatchProgress(prev => ({ ...prev, unmatched: prev.unmatched + 1 }));
-      }
+    }
+    
+    // Update unmatched immediately
+    setBatchProgress(prev => ({ ...prev, unmatched: unmatchedCount }));
+
+    // 2. Execute in Parallel Batches
+    // Processing 5 files at a time greatly speeds up the upload compared to sequential
+    const BATCH_SIZE = 5; 
+    let processedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < tasks.length; i += BATCH_SIZE) {
+        const chunk = tasks.slice(i, i + BATCH_SIZE);
+        
+        await Promise.all(chunk.map(async (task) => {
+             const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
+             if (success) successCount++;
+             else failCount++;
+             processedCount++;
+             
+             // Update progress
+             setBatchProgress(prev => ({
+                 ...prev,
+                 current: processedCount + unmatchedCount, // Current progress includes skipped unmatched
+                 successes: successCount,
+                 failed: failCount
+             }));
+        }));
     }
 
-    const message = `Queued: ${successes} | Unmatched: ${unmatched} | Errors: ${failed}`;
-    const type = (failed > 0 || unmatched > 0) ? 'warning' : 'success';
+    // Final Report
+    const totalProcessed = tasks.length + unmatchedCount;
+    setBatchProgress(prev => ({ ...prev, current: totalProcessed, successes: successCount, failed: failCount, unmatched: unmatchedCount }));
+
+    const message = `Queued: ${successCount} | Unmatched: ${unmatchedCount} | Errors: ${failCount}`;
+    const type = (failCount > 0 || unmatchedCount > 0) ? 'warning' : 'success';
     
     setLastBatchReport({ message, type });
     setIsProcessingBatch(false);
-    fetchData();
+    fetchData(); // Refresh list immediately
     e.target.value = '';
     
     setTimeout(() => {
@@ -136,12 +157,29 @@ const DesktopDashboard: React.FC = () => {
     }, 10000);
   };
 
-  const handleRetryFile = async (filename: string) => {
-    alert("Not available in native mode");
+  const handleRetry = async (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      const res = await retryServerFile(id);
+      if (res.success) {
+          alert("Retrying... Item moved to Queue.");
+          fetchData();
+      } else {
+          alert("Failed to retry: " + res.message + ". File might be deleted.");
+      }
   };
 
-  const handleDeleteFile = async (filename: string) => {
-    // Stub
+  const handleDeleteRequest = async (id: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!window.confirm("Delete this request history?")) return;
+      await deleteRequest(id);
+      fetchData();
+  };
+
+  const handleDeleteFile = async (filename: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (!window.confirm("Permanently delete file?")) return;
+      await deleteServerFile(filename);
+      fetchData();
   };
 
   const filteredRequests = (activeTab === 'queue' ? requests : failedRequests).filter(r => 
@@ -159,10 +197,8 @@ const DesktopDashboard: React.FC = () => {
                   <button onClick={() => setShowQr(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
                       <Trash2 className="w-5 h-5 rotate-45" />
                   </button>
-                  
                   <h2 className="text-xl font-bold mb-2">Connect WhatsApp</h2>
                   <p className="text-sm text-slate-500 mb-6">Open WhatsApp &gt; Linked Devices &gt; Link a Device</p>
-                  
                   <div className="bg-slate-100 p-4 rounded-xl aspect-square flex items-center justify-center mb-4">
                       {waStatus.status === 'QR_READY' && waStatus.qr ? (
                           <img src={waStatus.qr} alt="Scan QR" className="w-full h-full object-contain" />
@@ -178,21 +214,18 @@ const DesktopDashboard: React.FC = () => {
                           </div>
                       )}
                   </div>
-
-                  <button onClick={() => setShowQr(false)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium">
-                      Close
-                  </button>
+                  <button onClick={() => setShowQr(false)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium">Close</button>
               </div>
           </div>
       )}
 
       {/* SIDEBAR */}
       <div className="w-80 bg-slate-50 border-r border-slate-200 flex flex-col">
-        <div className="h-16 flex items-center px-6 border-b border-slate-200 bg-white">
-            <Link to="/" className="mr-3 p-1.5 rounded-md hover:bg-slate-100 text-slate-500 transition-colors">
-               <ArrowLeft className="w-5 h-5" />
-            </Link>
+        <div className="h-16 flex items-center justify-between px-6 border-b border-slate-200 bg-white">
             <span className="font-bold text-lg tracking-tight">Dashboard</span>
+            <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 transition-colors" title="Logout">
+                <LogOut className="w-5 h-5" />
+            </button>
         </div>
 
         {/* TABS */}
@@ -203,54 +236,96 @@ const DesktopDashboard: React.FC = () => {
           <button onClick={() => setActiveTab('issues')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-2 transition-all ${activeTab === 'issues' ? 'bg-red-50 shadow-sm text-red-600 border border-red-100' : 'text-slate-500 hover:bg-slate-100'}`}>
             Issues <span className={`px-1.5 rounded-full text-[10px] border ${failedRequests.length > 0 ? 'bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>{failedRequests.length}</span>
           </button>
+          <button onClick={() => setActiveTab('storage')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-2 transition-all ${activeTab === 'storage' ? 'bg-purple-50 shadow-sm text-purple-600 border border-purple-100' : 'text-slate-500 hover:bg-slate-100'}`}>
+            Storage
+          </button>
         </div>
 
         <div className="p-4 flex flex-col flex-1 overflow-hidden">
-          <div className="relative mb-6">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
-            <input 
-              type="text" 
-              placeholder="Search..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-white border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent focus:outline-none transition-shadow shadow-sm"
-            />
-          </div>
+          {activeTab !== 'storage' && (
+             <div className="relative mb-6">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <input 
+                  type="text" 
+                  placeholder="Search..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none shadow-sm"
+                />
+             </div>
+          )}
           
           <div className="space-y-2 overflow-y-auto flex-1 custom-scrollbar pr-1">
-             {isLoading && filteredRequests.length === 0 ? (
-                <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-slate-400"/></div>
-             ) : !isLoading && filteredRequests.length === 0 ? (
-                <div className="text-center py-12 text-slate-400">
-                  <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                  <p className="text-sm">No items found</p>
-                </div>
+             {activeTab === 'storage' ? (
+                // STORAGE LIST
+                serverFiles.length === 0 ? (
+                    <div className="text-center py-12 text-slate-400">
+                        <HardDrive className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                        <p className="text-sm">Storage Empty</p>
+                    </div>
+                ) : (
+                    serverFiles.map((file, idx) => (
+                        <div key={idx} className="p-3 rounded-xl bg-white border border-purple-100 shadow-sm flex items-center justify-between group">
+                            <div className="overflow-hidden">
+                                <p className="font-semibold text-xs text-slate-700 truncate w-40">{file.name}</p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">{file.size} • {new Date(file.created).toLocaleDateString()}</p>
+                            </div>
+                            <button onClick={(e) => handleDeleteFile(file.name, e)} className="p-2 hover:bg-red-50 rounded-lg text-slate-300 hover:text-red-500 transition-colors">
+                                <Trash2 className="w-4 h-4" />
+                            </button>
+                        </div>
+                    ))
+                )
              ) : (
-                filteredRequests.map((req) => (
-                  <div key={req.id} className={`group p-4 rounded-xl bg-white border shadow-sm hover:shadow-md transition-all cursor-default select-none relative overflow-hidden ${activeTab === 'issues' ? 'border-red-100 hover:border-red-200' : 'border-slate-100 hover:border-blue-200'}`}>
-                    <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity ${activeTab === 'issues' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
-                    <div className="flex justify-between items-start mb-1">
-                      <span className="font-semibold text-slate-800 text-sm truncate pr-2">{req.customerName}</span>
-                      <span className="text-[10px] text-slate-400 whitespace-nowrap">{req.requestedAt ? formatDistanceToNow(new Date(req.requestedAt)) : 'Unknown'}</span>
+                // QUEUE / ISSUES LIST
+                isLoading && filteredRequests.length === 0 ? (
+                    <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-slate-400"/></div>
+                 ) : !isLoading && filteredRequests.length === 0 ? (
+                    <div className="text-center py-12 text-slate-400">
+                      <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">No items found</p>
                     </div>
-                    <div className="flex items-center text-xs text-slate-500 mt-1">
-                      <FileVideo className={`w-3 h-3 mr-1.5 ${activeTab === 'issues' ? 'text-red-400' : 'text-blue-500'}`} />
-                      <span className="font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 truncate max-w-[180px]">{req.videoName}</span>
-                    </div>
-                    {activeTab === 'issues' && (req as any).error && (
-                      <div className="mt-2 pt-2 border-t border-red-50 flex items-start gap-1.5 text-[11px] text-red-600 bg-red-50/50 p-1.5 rounded">
-                        <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
-                        <span className="break-words leading-tight">{(req as any).error}</span>
+                 ) : (
+                    filteredRequests.map((req) => (
+                      <div key={req.id} className={`group p-4 rounded-xl bg-white border shadow-sm transition-all relative overflow-hidden ${activeTab === 'issues' ? 'border-red-100' : 'border-slate-100'}`}>
+                        <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity ${activeTab === 'issues' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
+                        
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="font-semibold text-slate-800 text-sm truncate pr-2">{req.customerName}</span>
+                          <div className="flex gap-2">
+                             {activeTab === 'issues' && (
+                                <>
+                                  <button onClick={(e) => handleRetry(req.id, e)} className="text-slate-400 hover:text-blue-500" title="Retry">
+                                     <RotateCw className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button onClick={(e) => handleDeleteRequest(req.id, e)} className="text-slate-400 hover:text-red-500" title="Delete">
+                                     <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </>
+                             )}
+                          </div>
+                        </div>
+                        
+                        <div className="flex items-center text-xs text-slate-500 mt-1">
+                          <FileVideo className={`w-3 h-3 mr-1.5 ${activeTab === 'issues' ? 'text-red-400' : 'text-blue-500'}`} />
+                          <span className="font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 truncate max-w-[150px]">{req.videoName}</span>
+                        </div>
+                        
+                        {activeTab === 'issues' && (req as any).error && (
+                          <div className="mt-2 pt-2 border-t border-red-50 flex items-start gap-1.5 text-[11px] text-red-600 bg-red-50/50 p-1.5 rounded">
+                            <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                            <span className="break-words leading-tight">{(req as any).error}</span>
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                ))
+                    ))
+                 )
              )}
           </div>
         </div>
 
         <div className="p-4 border-t border-slate-200 bg-slate-50">
-           <button onClick={() => fetchData()} disabled={isProcessingBatch} className="flex items-center justify-center w-full py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 rounded-xl text-sm font-medium text-slate-600 transition-all shadow-sm disabled:opacity-50">
+           <button onClick={() => fetchData()} disabled={isProcessingBatch} className="flex items-center justify-center w-full py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 rounded-xl text-sm font-medium text-slate-600 transition-all shadow-sm">
               <RefreshCw className={`w-3.5 h-3.5 mr-2 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
            </button>
         </div>
@@ -261,13 +336,19 @@ const DesktopDashboard: React.FC = () => {
         
         {/* Top Navigation Bar */}
         <header className="h-16 border-b border-slate-100 flex items-center justify-between px-8 bg-white/80 backdrop-blur-sm z-10 sticky top-0">
-           <h1 className="font-bold text-xl text-slate-900 flex items-center gap-2">
-             <Layers className="w-5 h-5 text-blue-500" />
-             Batch Upload Center
-           </h1>
+           <div className="flex items-center gap-4">
+               <h1 className="font-bold text-xl text-slate-900 flex items-center gap-2">
+                 <Layers className="w-5 h-5 text-blue-500" />
+                 Upload Center
+               </h1>
+               {(waStatus.queueLength || 0) > 0 && (
+                   <span className="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-full flex items-center animate-pulse">
+                       Sending: {waStatus.queueLength} in Queue
+                   </span>
+               )}
+           </div>
            
            <div className="flex items-center space-x-4">
-              {/* STATUS INDICATOR */}
               <button 
                   onClick={() => setShowQr(true)}
                   className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${
@@ -277,15 +358,9 @@ const DesktopDashboard: React.FC = () => {
                   }`}
               >
                 {waStatus.status === 'READY' || waStatus.status === 'AUTHENTICATED' ? (
-                    <>
-                        <Wifi className="w-3 h-3" />
-                        CONNECTED
-                    </>
+                    <><Wifi className="w-3 h-3" /> CONNECTED</>
                 ) : (
-                    <>
-                        <QrCode className="w-3 h-3" />
-                        {waStatus.status === 'QR_READY' ? 'SCAN QR' : 'CONNECTING...'}
-                    </>
+                    <><QrCode className="w-3 h-3" /> {waStatus.status === 'QR_READY' ? 'SCAN QR' : 'CONNECTING...'}</>
                 )}
               </button>
            </div>
@@ -321,7 +396,9 @@ const DesktopDashboard: React.FC = () => {
                          {lastBatchReport.type === 'success' ? <CheckCircle className="w-12 h-12 text-green-500" /> : <AlertCircle className="w-12 h-12 text-orange-500" />}
                        </div>
                        <h3 className="text-xl font-bold text-slate-800 mb-2">{lastBatchReport.message}</h3>
-                       <p className="text-slate-400 text-sm">{lastBatchReport.type === 'success' ? 'All files queued.' : 'Check Issues tab for errors.'}</p>
+                       <p className="text-slate-400 text-sm">
+                           {lastBatchReport.type === 'success' ? 'All files queued for safe sending.' : 'Check Issues tab for errors.'}
+                       </p>
                     </div>
                   ) : (
                     <>
@@ -330,7 +407,7 @@ const DesktopDashboard: React.FC = () => {
                       </div>
                       <h3 className="text-2xl font-bold text-slate-800 mb-2">Drag & Drop Videos</h3>
                       <p className="text-slate-500 text-sm max-w-sm text-center px-4 leading-relaxed">
-                         Files are matched automatically. <br/>Ensure WhatsApp is <b>Connected</b> (Top Right).
+                         Files match automatically. Sent via safe queue (5-15s delay). <br/>Ensure WhatsApp is <b>Connected</b>.
                       </p>
                     </>
                   )}

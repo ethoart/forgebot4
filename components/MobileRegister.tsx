@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Phone, Video, Check, Loader2, ChevronLeft, Globe } from 'lucide-react';
+import { User, Video, Check, Loader2, ChevronLeft, Globe, Phone } from 'lucide-react';
 import { registerCustomer } from '../services/api';
 import { Link } from 'react-router-dom';
 
@@ -12,7 +12,19 @@ const MobileRegister: React.FC = () => {
     if (!formData.name || !formData.phone || !formData.videoName) return;
 
     setStatus('submitting');
-    const success = await registerCustomer(formData.name, formData.phone, formData.videoName);
+    
+    // Clean input and remove non-numeric chars
+    let cleanPhone = formData.phone.replace(/[^0-9]/g, '');
+    
+    // Remove leading zero if user typed it (e.g. 077... -> 77...)
+    if (cleanPhone.startsWith('0')) {
+        cleanPhone = cleanPhone.substring(1);
+    }
+    
+    // Default country code: 94
+    const finalPhone = '94' + cleanPhone;
+
+    const success = await registerCustomer(formData.name, finalPhone, formData.videoName);
     
     if (success) {
       setStatus('success');
@@ -83,19 +95,20 @@ const MobileRegister: React.FC = () => {
               </div>
 
               <div className="relative group">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Globe className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none z-10">
+                   {/* Country Code Prefix */}
+                   <span className="text-gray-500 font-bold text-lg border-r border-gray-300 pr-3 mr-1">+94</span>
                 </div>
                 <input
                   type="tel"
                   required
-                  className="block w-full pl-12 pr-4 py-4 bg-white border-0 ring-1 ring-gray-200 rounded-2xl text-lg placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/50 focus:outline-none shadow-sm transition-all"
-                  placeholder="Phone (e.g. 1555000000)"
+                  className="block w-full pl-20 pr-4 py-4 bg-white border-0 ring-1 ring-gray-200 rounded-2xl text-lg placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/50 focus:outline-none shadow-sm transition-all"
+                  placeholder="77 123 4567"
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 />
-                <p className="mt-1.5 text-xs text-blue-600 px-2 text-right font-medium">
-                  * Must include Country Code (No +)
+                <p className="mt-1.5 text-xs text-slate-400 px-2 text-right">
+                  Enter local number. Country code added automatically.
                 </p>
               </div>
 

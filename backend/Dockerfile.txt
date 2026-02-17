@@ -4,6 +4,7 @@ WORKDIR /app
 
 # Install Chromium and dependencies for Puppeteer
 # udev and ttf-freefont are crucial for avoiding crashes
+# ffmpeg added for better media support
 RUN apk add --no-cache \
       chromium \
       nss \
@@ -14,7 +15,8 @@ RUN apk add --no-cache \
       nodejs \
       yarn \
       udev \
-      git
+      git \
+      ffmpeg
 
 # Tell Puppeteer to skip downloading Chrome. We will use the installed package.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \

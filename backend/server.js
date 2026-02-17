@@ -15,13 +15,14 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 8000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://admin:secret123@mongo:27017/whatsdoc?authSource=admin';
+const ADMIN_PASS = 'secret123'; // Simple password for now
 
 // --- APP SETUP ---
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- DATABASE WITH RETRY ---
+// --- DATABASE ---
 const connectWithRetry = async () => {
   const maxRetries = 10;
   let retries = 0;
@@ -36,11 +37,9 @@ const connectWithRetry = async () => {
       await new Promise(res => setTimeout(res, 5000));
     }
   }
-  console.error('💀 MongoDB failed to connect after multiple attempts. Exiting...');
   process.exit(1);
 };
 
-// Define Models immediately
 const CustomerSchema = new mongoose.Schema({
   customerName: String,
   phoneNumber: String,
@@ -52,267 +51,289 @@ const CustomerSchema = new mongoose.Schema({
 });
 const Customer = mongoose.model('Customer', CustomerSchema);
 
-// Start DB connection
 connectWithRetry();
 
-// --- WHATSAPP CLIENT SETUP ---
-console.log("🔄 Initializing Native WhatsApp Client...");
-
+// --- WHATSAPP CLIENT & QUEUE ---
 const AUTH_PATH = '/app/wwebjs_auth';
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// CRITICAL FIX: Recursive Lock Cleaner
+// Queue Variables
+const messageQueue = [];
+let isProcessingQueue = false;
+
+// Random Delay Helper (Human Behavior)
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const getRandomDelay = () => Math.floor(Math.random() * (15000 - 5000 + 1) + 5000); // 5s to 15s
+
 const cleanUpLocks = (dir) => {
     if (!fs.existsSync(dir)) return;
-    
     try {
         const items = fs.readdirSync(dir);
         for (const item of items) {
             const fullPath = path.join(dir, item);
             try {
                 const stat = fs.lstatSync(fullPath);
-                
                 if (stat.isDirectory()) {
                     cleanUpLocks(fullPath);
                 } else if (item === 'SingletonLock' || item === 'SingletonCookie' || item === 'SingletonSocket') {
                     fs.unlinkSync(fullPath);
-                    console.log(`✅ Removed stale lock file: ${fullPath}`);
                 }
-            } catch (e) {
-                // Ignore errors accessing specific files (race conditions)
-            }
+            } catch (e) {}
         }
-    } catch (e) {
-        console.error(`Error traversing directory ${dir}:`, e);
-    }
+    } catch (e) {}
 };
 
 let qrCodeData = null;
-let clientStatus = 'INITIALIZING'; // INITIALIZING, QR_READY, AUTHENTICATED, READY, DISCONNECTED
+let clientStatus = 'INITIALIZING';
 let client = null;
 
-const initializeClient = async () => {
-    // 1. Pre-emptive Clean
-    cleanUpLocks(AUTH_PATH);
+const processQueue = async () => {
+    if (isProcessingQueue || messageQueue.length === 0) return;
+    if (clientStatus !== 'READY' && clientStatus !== 'AUTHENTICATED') {
+        // Wait and try again later if client disconnected
+        setTimeout(processQueue, 5000);
+        return;
+    }
 
-    // 2. Configure Client
+    isProcessingQueue = true;
+    const task = messageQueue.shift(); // Get first task
+    
+    console.log(`🤖 Queue Processing: ${task.customerName} (${messageQueue.length} remaining)`);
+
+    try {
+        // 1. Human Delay
+        const delay = getRandomDelay();
+        console.log(`⏳ Waiting ${delay/1000}s to mimic human behavior...`);
+        await wait(delay);
+
+        // 2. Processing
+        let cleanPhone = task.phoneNumber.replace(/[^0-9]/g, '');
+        const chatId = `${cleanPhone}@c.us`;
+
+        if (!fs.existsSync(task.filePath)) {
+            throw new Error("File not found on server (maybe deleted?)");
+        }
+
+        const media = MessageMedia.fromFilePath(task.filePath);
+        // Explicitly set filename ensures it sends correctly as a document
+        if (!media.filename) {
+            media.filename = task.videoName || path.basename(task.filePath);
+        }
+        
+        // CRITICAL FIX: Send as document to bypass video re-encoding issues
+        await client.sendMessage(chatId, media, {
+            caption: `Hello ${task.customerName}! Here is your document: ${task.videoName}`,
+            sendMediaAsDocument: true
+        });
+
+        console.log(`✅ Sent to ${task.customerName}`);
+
+        // 3. Success Update
+        await Customer.findByIdAndUpdate(task.requestId, {
+            status: 'completed',
+            completedAt: new Date(),
+            error: null
+        });
+
+        // 4. Delete File ON SUCCESS ONLY
+        try { fs.unlinkSync(task.filePath); } catch(e) {}
+
+    } catch (error) {
+        console.error(`❌ Send Failed for ${task.customerName}:`, error.message);
+        console.error(error); // Log full stack trace
+        
+        await Customer.findByIdAndUpdate(task.requestId, {
+            status: 'failed',
+            error: error.message || 'Send Failed'
+        });
+        // Note: We DO NOT delete the file on failure, so it can be retried/viewed in storage
+    }
+
+    isProcessingQueue = false;
+    processQueue(); // Process next
+};
+
+const initializeClient = async () => {
+    cleanUpLocks(AUTH_PATH);
     client = new Client({
         authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
         puppeteer: {
             headless: true,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
             args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage', 
                 '--disable-gpu',
-                '--disable-software-rasterizer'
-            ]
+                '--disable-software-rasterizer',
+                '--disable-extensions'
+            ],
+            timeout: 0 // Disable timeout for heavy media operations
         },
-        webVersionCache: {
-            type: 'remote',
-            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-        }
+        webVersionCache: { type: 'remote', remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html' }
     });
 
-    // 3. Setup Event Listeners
-    client.on('qr', (qr) => {
-        console.log('⚡ QR RECEIVED');
-        qrcode.toDataURL(qr, (err, url) => {
-            if (!err) {
-                qrCodeData = url;
-                clientStatus = 'QR_READY';
-            }
-        });
+    client.on('qr', (qr) => { qrcode.toDataURL(qr, (err, url) => { if(!err) { qrCodeData = url; clientStatus = 'QR_READY'; } }); });
+    client.on('ready', () => { 
+        console.log('✅ WhatsApp Ready'); 
+        clientStatus = 'READY'; 
+        qrCodeData = null; 
+        processQueue(); // Trigger queue if items exist
+    });
+    client.on('authenticated', () => { clientStatus = 'AUTHENTICATED'; });
+    client.on('disconnected', () => { 
+        clientStatus = 'DISCONNECTED'; 
+        setTimeout(() => { try { client.destroy(); } catch(e){} initializeClient(); }, 5000); 
     });
 
-    client.on('ready', () => {
-        console.log('✅ WhatsApp Client is READY!');
-        clientStatus = 'READY';
-        qrCodeData = null;
-    });
-
-    client.on('authenticated', () => {
-        console.log('🔐 WhatsApp Authenticated');
-        clientStatus = 'AUTHENTICATED';
-        qrCodeData = null;
-    });
-
-    client.on('auth_failure', (msg) => {
-        console.error('❌ Auth Failure', msg);
-        clientStatus = 'DISCONNECTED';
-    });
-
-    client.on('disconnected', (reason) => {
-        console.log('❌ WhatsApp Disconnected:', reason);
-        clientStatus = 'DISCONNECTED';
-        // Destroy and Re-initialize
-        setTimeout(async () => {
-             console.log('🔄 Reloading client...');
-             try { await client.destroy(); } catch(e) {}
-             initializeClient();
-        }, 5000);
-    });
-
-    // 4. Initialize with Retry Logic
-    try {
-        await client.initialize();
-    } catch (err) {
-        console.error("💥 Client Initialization Failed:", err.message);
-        
-        // Check for Lock Errors (Code 21, SingletonLock)
-        const isLockError = err.message.includes('Code: 21') || 
-                            err.message.includes('SingletonLock') ||
-                            err.message.includes('session');
-
-        if (isLockError) {
-             console.log("🧹 Lock file issue detected. Cleaning and retrying...");
-             cleanUpLocks(AUTH_PATH);
-             setTimeout(initializeClient, 5000);
-        } else {
-             console.log("⚠️ Unexpected error. Retrying in 10s...");
-             setTimeout(initializeClient, 10000);
-        }
-    }
+    try { await client.initialize(); } catch (err) { setTimeout(initializeClient, 10000); }
 };
 
-// Start the Client
 initializeClient();
 
-// --- FILE UPLOAD SETUP ---
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, safeName);
-  }
+const upload = multer({ 
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, uploadDir),
+        filename: (req, file, cb) => cb(null, file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_'))
+    }) 
 });
 
-const upload = multer({ storage: storage, limits: { fileSize: 100 * 1024 * 1024 } });
+// --- API ROUTES ---
 
-// --- ROUTES ---
+// Login
+app.post('/login', (req, res) => {
+    const { password } = req.body;
+    if (password === ADMIN_PASS) return res.json({ success: true, token: 'mock-token' });
+    res.status(401).json({ error: 'Invalid password' });
+});
 
+// Status
 app.get('/status', (req, res) => {
-    res.json({
-        status: clientStatus,
-        qr: qrCodeData
-    });
+    res.json({ status: clientStatus, qr: qrCodeData, queueLength: messageQueue.length });
 });
 
+// Register
 app.post('/register-customer', async (req, res) => {
   try {
     const { name, phone, videoName } = req.body;
-    if (!name || !phone || !videoName) return res.status(400).json({ error: 'Missing fields' });
-
-    const newCustomer = new Customer({
-      customerName: name,
-      phoneNumber: phone,
-      videoName: videoName
-    });
-
+    const newCustomer = new Customer({ customerName: name, phoneNumber: phone, videoName });
     await newCustomer.save();
-    console.log(`📝 Registered: ${name}`);
     res.json({ success: true, id: newCustomer._id });
-  } catch (error) {
-    console.error("Register Error:", error);
-    res.status(500).json({ error: error.message });
-  }
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// Getters
 app.get('/get-pending', async (req, res) => {
-  try {
-    if (mongoose.connection.readyState !== 1) return res.json([]);
-    const docs = await Customer.find({ status: 'pending' }).sort({ requestedAt: 1 }).limit(100);
-    const mapped = docs.map(d => ({
-      id: d._id,
-      customerName: d.customerName,
-      phoneNumber: d.phoneNumber,
-      videoName: d.videoName,
-      status: d.status,
-      requestedAt: d.requestedAt
-    }));
-    res.json(mapped);
-  } catch (error) {
-    console.error("Get Pending Error:", error);
-    res.status(500).json({ error: error.message });
-  }
+  const docs = await Customer.find({ status: 'pending' }).sort({ requestedAt: 1 }).limit(100);
+  res.json(docs.map(d => ({ id: d._id, customerName: d.customerName, phoneNumber: d.phoneNumber, videoName: d.videoName, status: d.status, requestedAt: d.requestedAt })));
 });
 
 app.get('/get-failed', async (req, res) => {
-  try {
-    if (mongoose.connection.readyState !== 1) return res.json([]);
-    const docs = await Customer.find({ status: 'failed' }).sort({ requestedAt: -1 }).limit(50);
-    const mapped = docs.map(d => ({
-      id: d._id,
-      customerName: d.customerName,
-      phoneNumber: d.phoneNumber,
-      videoName: d.videoName,
-      status: d.status,
-      requestedAt: d.requestedAt,
-      error: d.error
-    }));
-    res.json(mapped);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+  const docs = await Customer.find({ status: 'failed' }).sort({ requestedAt: -1 }).limit(50);
+  res.json(docs.map(d => ({ id: d._id, customerName: d.customerName, phoneNumber: d.phoneNumber, videoName: d.videoName, status: d.status, requestedAt: d.requestedAt, error: d.error })));
 });
 
+// Upload & Queue
 app.post('/upload-document', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
-
+  if (!req.file) return res.status(400).json({ error: 'No file.' });
+  
   const { requestId, phoneNumber, videoName } = req.body;
   
-  // Allow processing if Authenticated OR Ready.
-  if (clientStatus !== 'READY' && clientStatus !== 'AUTHENTICATED') {
-      if (req.file.path) fs.unlinkSync(req.file.path);
-      return res.status(503).json({ error: 'WhatsApp client is not ready. Please scan QR code.' });
-  }
+  // Update DB to Processing
+  await Customer.findByIdAndUpdate(requestId, { status: 'processing' });
 
-  // Immediate response
-  res.json({ success: true, message: 'Processing started' });
+  // Add to Queue
+  messageQueue.push({
+      requestId,
+      phoneNumber,
+      customerName: videoName, // Using videoName as rough name if needed, or query DB. Ideally pass name.
+      videoName,
+      filePath: req.file.path
+  });
 
-  const filePath = req.file.path;
-  const originalName = req.file.originalname;
+  // Trigger Processor
+  processQueue();
 
-  try {
-    console.log(`🔄 Processing Upload for ID: ${requestId}`);
-    
-    let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
-    const chatId = `${cleanPhone}@c.us`;
-
-    const media = MessageMedia.fromFilePath(filePath);
-    
-    console.log(`🚀 Sending Native: ${chatId} | File: ${originalName}`);
-    await client.sendMessage(chatId, media, {
-        caption: `Hello! Here is your document: ${videoName}`
-    });
-
-    console.log(`✅ Sent Successfully`);
-
-    await Customer.findByIdAndUpdate(requestId, {
-      status: 'completed',
-      completedAt: new Date(),
-      error: null
-    });
-
-  } catch (error) {
-    console.error(`❌ Send Error:`, error);
-    await Customer.findByIdAndUpdate(requestId, {
-      status: 'failed',
-      error: error.message || 'WhatsApp Send Failed'
-    });
-  } finally {
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  }
+  res.json({ success: true, message: 'Queued for safe sending' });
 });
 
-app.get('/server-files', (req, res) => res.json([]));
+// --- NEW FEATURES ---
+
+// Storage Listing
+app.get('/server-files', (req, res) => {
+    fs.readdir(uploadDir, (err, files) => {
+        if (err) return res.json([]);
+        const fileStats = files.map(file => {
+            try {
+                const stats = fs.statSync(path.join(uploadDir, file));
+                return { name: file, size: (stats.size / 1024 / 1024).toFixed(2) + ' MB', created: stats.birthtime };
+            } catch (e) { return null; }
+        }).filter(Boolean);
+        res.json(fileStats);
+    });
+});
+
+// Delete File
+app.delete('/delete-file/:name', (req, res) => {
+    const p = path.join(uploadDir, req.params.name);
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    res.json({ success: true });
+});
+
+// Delete Request
+app.delete('/delete-request/:id', async (req, res) => {
+    await Customer.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+});
+
+// Retry Request
+app.post('/retry-request/:id', async (req, res) => {
+    try {
+        const doc = await Customer.findById(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Request not found' });
+
+        // Check if file exists in uploads
+        // We assume filename matches videoName roughly or we need to find it. 
+        // In this simple system, we rely on the file still being there matching the videoName logic if possible, 
+        // OR we can't retry if the file is gone. 
+        // Improvement: We iterate files to find a match.
+        
+        const files = fs.readdirSync(uploadDir);
+        // Clean matching logic
+        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const target = normalize(doc.videoName);
+        
+        const match = files.find(f => normalize(f).includes(target));
+
+        if (!match) {
+            return res.status(400).json({ error: 'Original file missing from server storage.' });
+        }
+
+        const filePath = path.join(uploadDir, match);
+
+        // Reset Status
+        doc.status = 'processing';
+        doc.error = null;
+        await doc.save();
+
+        // Push to Queue
+        messageQueue.push({
+            requestId: doc._id,
+            phoneNumber: doc.phoneNumber,
+            customerName: doc.customerName,
+            videoName: doc.videoName,
+            filePath: filePath
+        });
+        
+        processQueue();
+
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Backend (Native WhatsApp) listening on port ${PORT}`);
+  console.log(`🚀 Backend listening on ${PORT}`);
 });

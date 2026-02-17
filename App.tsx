@@ -1,8 +1,15 @@
 import React from 'react';
-import { HashRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import MobileRegister from './components/MobileRegister';
 import DesktopDashboard from './components/DesktopDashboard';
+import Login from './components/Login';
 import { Smartphone, Monitor, ChevronRight } from 'lucide-react';
+
+const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+    const isAuth = localStorage.getItem('isAuthenticated') === 'true';
+    if (!isAuth) return <Navigate to="/login" replace />;
+    return <>{children}</>;
+};
 
 const Navigation = () => {
   const location = useLocation();
@@ -10,7 +17,6 @@ const Navigation = () => {
   if (location.pathname === '/' || location.pathname === '') {
      return (
        <div className="min-h-screen flex flex-col items-center justify-center p-6 relative overflow-hidden bg-slate-900">
-         {/* Background Effects */}
          <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-800 via-slate-900 to-black"></div>
          <div className="absolute top-[-10%] left-[-10%] w-96 h-96 bg-blue-500/30 rounded-full blur-[100px] animate-blob"></div>
          <div className="absolute bottom-[-10%] right-[-10%] w-96 h-96 bg-purple-500/30 rounded-full blur-[100px] animate-blob animation-delay-2000"></div>
@@ -25,7 +31,6 @@ const Navigation = () => {
          </div>
 
          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-2xl z-10">
-           
            <Link to="/register" className="group relative bg-white/5 backdrop-blur-lg p-8 rounded-3xl border border-white/10 hover:border-blue-500/50 hover:bg-white/10 transition-all duration-300">
               <div className="flex items-start justify-between mb-8">
                 <div className="p-4 bg-blue-500/20 rounded-2xl">
@@ -51,7 +56,6 @@ const Navigation = () => {
                 <p className="text-slate-400 font-light">Document matching dashboard.</p>
               </div>
            </Link>
-
          </div>
          
          <div className="absolute bottom-8 text-slate-600 text-sm">
@@ -68,8 +72,13 @@ const App: React.FC = () => {
     <HashRouter>
       <Navigation />
       <Routes>
+        <Route path="/login" element={<Login />} />
         <Route path="/register" element={<MobileRegister />} />
-        <Route path="/admin" element={<DesktopDashboard />} />
+        <Route path="/admin" element={
+            <ProtectedRoute>
+                <DesktopDashboard />
+            </ProtectedRoute>
+        } />
       </Routes>
     </HashRouter>
   );

@@ -12,9 +12,22 @@ export interface ServerFile {
 export interface WhatsAppStatus {
   status: 'INITIALIZING' | 'QR_READY' | 'READY' | 'DISCONNECTED' | 'AUTHENTICATED';
   qr: string | null;
+  queueLength?: number;
 }
 
 // --- API METHODS ---
+
+export const login = async (password: string): Promise<boolean> => {
+    if (APP_CONFIG.useMockMode) return password === 'secret123';
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password })
+        });
+        return res.ok;
+    } catch (e) { return false; }
+};
 
 export const getWhatsAppStatus = async (): Promise<WhatsAppStatus> => {
   if (APP_CONFIG.useMockMode) return { status: 'READY', qr: null };
@@ -27,78 +40,36 @@ export const getWhatsAppStatus = async (): Promise<WhatsAppStatus> => {
   }
 };
 
-export const registerCustomer = async (
-  name: string,
-  phone: string,
-  videoName: string
-): Promise<boolean> => {
-  if (APP_CONFIG.useMockMode) {
-    await delay(800);
-    return true;
-  } else {
+export const registerCustomer = async (name: string, phone: string, videoName: string): Promise<boolean> => {
     try {
       const response = await fetch(`${APP_CONFIG.apiBaseUrl}/register-customer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, phone, videoName }),
       });
-      if (!response.ok) {
-        console.error("Register Error:", await response.text());
-        return false;
-      }
-      return true;
-    } catch (error) {
-      console.error("Network Error", error);
-      return false;
-    }
-  }
+      return response.ok;
+    } catch (error) { return false; }
 };
 
 export const getPendingRequests = async (): Promise<CustomerRequest[]> => {
-  if (APP_CONFIG.useMockMode) return [];
   try {
     const response = await fetch(`${APP_CONFIG.apiBaseUrl}/get-pending`);
-    if (response.ok) {
-       const data = await response.json();
-       return data;
-    }
-    return [];
-  } catch (error) {
-    console.error("API Error", error);
-    return [];
-  }
+    return response.ok ? await response.json() : [];
+  } catch (error) { return []; }
 };
 
 export const getFailedRequests = async (): Promise<CustomerRequest[]> => {
-  if (APP_CONFIG.useMockMode) return [];
   try {
     const response = await fetch(`${APP_CONFIG.apiBaseUrl}/get-failed`);
-    if (response.ok) {
-       const data = await response.json();
-       return data;
-    }
-    return [];
-  } catch (error) {
-    console.error("API Error", error);
-    return [];
-  }
+    return response.ok ? await response.json() : [];
+  } catch (error) { return []; }
 };
 
-export const uploadDocument = async (
-  requestId: string,
-  file: File,
-  phoneNumber: string
-): Promise<boolean> => {
-  if (APP_CONFIG.useMockMode) return true;
-
-  if (!requestId || !file || !phoneNumber) {
-    return false;
-  }
-
+export const uploadDocument = async (requestId: string, file: File, phoneNumber: string): Promise<boolean> => {
   const formData = new FormData();
   formData.append('requestId', requestId);
   formData.append('phoneNumber', phoneNumber);
-  formData.append('videoName', file.name);
+  formData.append('videoName', file.name); // passing filename for loose matching if needed
   formData.append('file', file);
 
   try {
@@ -106,26 +77,36 @@ export const uploadDocument = async (
       method: 'POST',
       body: formData, 
     });
-    
-    if (!response.ok) {
-      console.error("Upload Error:", response.status, await response.text());
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error("Upload Network Error", error);
-    return false;
-  }
+    return response.ok;
+  } catch (error) { return false; }
 };
 
 export const getServerFiles = async (): Promise<ServerFile[]> => {
-  return [];
+  try {
+      const res = await fetch(`${APP_CONFIG.apiBaseUrl}/server-files`);
+      return res.ok ? await res.json() : [];
+  } catch (e) { return []; }
 };
 
 export const deleteServerFile = async (filename: string): Promise<boolean> => {
-  return true;
+  try {
+      await fetch(`${APP_CONFIG.apiBaseUrl}/delete-file/${filename}`, { method: 'DELETE' });
+      return true;
+  } catch (e) { return false; }
 };
 
-export const retryServerFile = async (filename: string): Promise<{success: boolean, message?: string}> => {
-  return { success: false, message: "Manual retry not available" };
+export const retryServerFile = async (id: string): Promise<{success: boolean, message?: string}> => {
+  try {
+      const res = await fetch(`${APP_CONFIG.apiBaseUrl}/retry-request/${id}`, { method: 'POST' });
+      if (res.ok) return { success: true };
+      const data = await res.json();
+      return { success: false, message: data.error };
+  } catch (e) { return { success: false, message: 'Network error' }; }
+};
+
+export const deleteRequest = async (id: string): Promise<boolean> => {
+    try {
+        await fetch(`${APP_CONFIG.apiBaseUrl}/delete-request/${id}`, { method: 'DELETE' });
+        return true;
+    } catch (e) { return false; }
 };
