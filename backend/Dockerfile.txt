@@ -3,6 +3,7 @@ FROM node:20-alpine
 WORKDIR /app
 
 # Install Chromium and dependencies for Puppeteer
+# udev and ttf-freefont are crucial for avoiding crashes
 RUN apk add --no-cache \
       chromium \
       nss \
@@ -11,7 +12,9 @@ RUN apk add --no-cache \
       ca-certificates \
       ttf-freefont \
       nodejs \
-      yarn
+      yarn \
+      udev \
+      git
 
 # Tell Puppeteer to skip downloading Chrome. We will use the installed package.
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \

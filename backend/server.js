@@ -8,24 +8,40 @@ import { fileURLToPath } from 'url';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
+import { rimraf } from 'rimraf'; // fallback if needed, but fs.rm is fine in node 20
 
 // --- CONFIGURATION ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 8000;
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://admin:secret123@mongo:27017';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://admin:secret123@mongo:27017/whatsdoc?authSource=admin';
 
 // --- APP SETUP ---
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// --- DATABASE ---
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected'))
-  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+// --- DATABASE WITH RETRY ---
+const connectWithRetry = async () => {
+  const maxRetries = 10;
+  let retries = 0;
+  while (retries < maxRetries) {
+    try {
+      await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 });
+      console.log('✅ MongoDB Connected');
+      return;
+    } catch (err) {
+      retries++;
+      console.error(`❌ MongoDB Connection Failed (Attempt ${retries}/${maxRetries}):`, err.message);
+      await new Promise(res => setTimeout(res, 5000));
+    }
+  }
+  console.error('💀 MongoDB failed to connect after multiple attempts. Exiting...');
+  process.exit(1);
+};
 
+// Define Models immediately so they are available
 const CustomerSchema = new mongoose.Schema({
   customerName: String,
   phoneNumber: String,
@@ -35,20 +51,48 @@ const CustomerSchema = new mongoose.Schema({
   requestedAt: { type: Date, default: Date.now },
   completedAt: Date
 });
-
 const Customer = mongoose.model('Customer', CustomerSchema);
+
+// Start DB connection in background
+connectWithRetry();
 
 // --- WHATSAPP CLIENT SETUP ---
 console.log("🔄 Initializing Native WhatsApp Client...");
+
+const AUTH_PATH = '/app/wwebjs_auth';
+
+// CRITICAL FIX: Clean up SingletonLock if it exists from a crashed session
+const cleanUpLocks = () => {
+    const sessionDir = path.join(AUTH_PATH, 'session');
+    if (fs.existsSync(sessionDir)) {
+        const lockFile = path.join(sessionDir, 'SingletonLock');
+        if (fs.existsSync(lockFile)) {
+            console.log("⚠️ Found stale SingletonLock. Removing it to prevent startup crash...");
+            try {
+                fs.unlinkSync(lockFile);
+                console.log("✅ SingletonLock removed.");
+            } catch (e) {
+                console.error("❌ Failed to remove lock file:", e);
+            }
+        }
+        
+        // Also remove SingletonCookie if present (less common but possible)
+        const cookieFile = path.join(sessionDir, 'SingletonCookie');
+         if (fs.existsSync(cookieFile)) {
+            try { fs.unlinkSync(cookieFile); } catch(e) {}
+        }
+    }
+};
+
+cleanUpLocks();
 
 let qrCodeData = null;
 let clientStatus = 'INITIALIZING'; // INITIALIZING, QR_READY, AUTHENTICATED, READY, DISCONNECTED
 
 const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: '/app/wwebjs_auth' }),
+    authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
     puppeteer: {
         headless: true,
-        // Use the path defined in Dockerfile env or fallback to standard alpine path
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
         args: [
             '--no-sandbox',
@@ -57,8 +101,13 @@ const client = new Client({
             '--disable-accelerated-2d-canvas',
             '--no-first-run',
             '--no-zygote',
-            '--disable-gpu'
+            '--disable-gpu',
+            '--disable-software-rasterizer'
         ]
+    },
+    webVersionCache: {
+        type: 'remote',
+        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
     }
 });
 
@@ -94,13 +143,21 @@ client.on('disconnected', (reason) => {
     clientStatus = 'DISCONNECTED';
     // Re-initialize after a delay
     setTimeout(() => {
-        client.initialize();
+        console.log('🔄 Re-initializing client...');
+        client.initialize().catch(e => console.error("Re-init failed:", e));
     }, 5000);
 });
 
-client.initialize();
+// Initialize safely
+try {
+    client.initialize().catch(err => {
+        console.error("💥 Fatal Client Initialization Error:", err);
+    });
+} catch (e) {
+    console.error("💥 Sync Init Error:", e);
+}
 
-// --- FILE UPLOAD ---
+// --- FILE UPLOAD SETUP ---
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -116,7 +173,7 @@ const upload = multer({ storage: storage, limits: { fileSize: 100 * 1024 * 1024 
 
 // --- ROUTES ---
 
-// 1. SYSTEM STATUS (For Frontend UI)
+// 1. SYSTEM STATUS
 app.get('/status', (req, res) => {
     res.json({
         status: clientStatus,
@@ -140,6 +197,7 @@ app.post('/register-customer', async (req, res) => {
     console.log(`📝 Registered: ${name}`);
     res.json({ success: true, id: newCustomer._id });
   } catch (error) {
+    console.error("Register Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -147,6 +205,10 @@ app.post('/register-customer', async (req, res) => {
 // 3. GET PENDING
 app.get('/get-pending', async (req, res) => {
   try {
+    // If DB isn't ready, return empty array instead of crashing
+    if (mongoose.connection.readyState !== 1) {
+        return res.json([]);
+    }
     const docs = await Customer.find({ status: 'pending' }).sort({ requestedAt: 1 }).limit(100);
     const mapped = docs.map(d => ({
       id: d._id,
@@ -158,6 +220,7 @@ app.get('/get-pending', async (req, res) => {
     }));
     res.json(mapped);
   } catch (error) {
+    console.error("Get Pending Error:", error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -165,6 +228,7 @@ app.get('/get-pending', async (req, res) => {
 // 4. GET FAILED
 app.get('/get-failed', async (req, res) => {
   try {
+    if (mongoose.connection.readyState !== 1) return res.json([]);
     const docs = await Customer.find({ status: 'failed' }).sort({ requestedAt: -1 }).limit(50);
     const mapped = docs.map(d => ({
       id: d._id,
@@ -187,7 +251,8 @@ app.post('/upload-document', upload.single('file'), async (req, res) => {
 
   const { requestId, phoneNumber, videoName } = req.body;
   
-  if (clientStatus !== 'READY') {
+  // Allow processing if Authenticated OR Ready. Sometimes 'Ready' event lags.
+  if (clientStatus !== 'READY' && clientStatus !== 'AUTHENTICATED') {
       if (req.file.path) fs.unlinkSync(req.file.path);
       return res.status(503).json({ error: 'WhatsApp client is not ready. Please scan QR code.' });
   }
@@ -236,6 +301,7 @@ app.post('/upload-document', upload.single('file'), async (req, res) => {
 
 app.get('/server-files', (req, res) => res.json([]));
 
+// Start Server immediately
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend (Native WhatsApp) listening on port ${PORT}`);
 });
