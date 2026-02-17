@@ -8,7 +8,6 @@ import { fileURLToPath } from 'url';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
-import { rimraf } from 'rimraf'; // fallback if needed, but fs.rm is fine in node 20
 
 // --- CONFIGURATION ---
 const __filename = fileURLToPath(import.meta.url);
