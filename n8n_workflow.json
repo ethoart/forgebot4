@@ -1,0 +1,286 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "register-customer",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Webhook Register",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 100]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "status",
+              "value": "pending"
+            },
+            {
+              "name": "requestedAt",
+              "value": "={{new Date().toISOString()}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Add Metadata",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [300, 100]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "collection": "customers",
+        "options": {}
+      },
+      "name": "Mongo Insert",
+      "type": "n8n-nodes-base.mongoDb",
+      "position": [500, 100],
+      "credentials": {
+        "mongoDb": {
+          "id": "mongo_cred_1",
+          "name": "Local Mongo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"id\": \"{{$json._id}}\" }",
+        "options": {}
+      },
+      "name": "Respond API",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [700, 100]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "upload-document",
+        "responseMode": "responseNode",
+        "options": {
+          "binaryData": true
+        }
+      },
+      "name": "Webhook Upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [100, 400]
+    },
+    {
+      "parameters": {
+        "operation": "find",
+        "collection": "customers",
+        "query": "={ \"_id\": { \"$oid\": \"{{$json.requestId}}\" } }"
+      },
+      "name": "Get Customer",
+      "type": "n8n-nodes-base.mongoDb",
+      "position": [300, 400],
+      "credentials": {
+        "mongoDb": {
+          "id": "mongo_cred_1",
+          "name": "Local Mongo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://waha:3000/api/sendFile",
+        "sendBody": true,
+        "contentType": "json",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Api-Key",
+              "value": "secret123"
+            }
+          ]
+        },
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chatId",
+              "value": "={{$json.phoneNumber.replace(/[^0-9]/g, '')}}@c.us"
+            },
+            {
+              "name": "caption",
+              "value": "Hi {{$json.customerName}}! Here is your document: {{$json.videoName}}"
+            },
+            {
+              "name": "session",
+              "value": "default"
+            },
+            {
+              "name": "file",
+              "value": "={{ {\n  \"mimetype\": $binary.file.mimeType,\n  \"filename\": $binary.file.fileName,\n  \"data\": \"data:\" + $binary.file.mimeType + \";base64,\" + $binary.file.data\n} }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "WAHA Send",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "collection": "customers",
+        "updateKey": "_id",
+        "updateFields": "status",
+        "value": "completed"
+      },
+      "name": "Mark Complete",
+      "type": "n8n-nodes-base.mongoDb",
+      "position": [700, 400],
+      "credentials": {
+        "mongoDb": {
+          "id": "mongo_cred_1",
+          "name": "Local Mongo"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true }",
+        "options": {}
+      },
+      "name": "Respond Upload",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+       "parameters": {
+          "httpMethod": "GET",
+          "path": "get-pending",
+          "responseMode": "responseNode",
+          "options": {}
+       },
+       "name": "Webhook Get",
+       "type": "n8n-nodes-base.webhook",
+       "typeVersion": 1,
+       "position": [100, 700]
+    },
+    {
+       "parameters": {
+          "operation": "find",
+          "collection": "customers",
+          "query": "{ \"status\": \"pending\" }",
+          "options": {
+             "limit": 50,
+             "sort": { "requestedAt": 1 }
+          }
+       },
+       "name": "Find Pending",
+       "type": "n8n-nodes-base.mongoDb",
+       "position": [300, 700],
+       "credentials": {
+         "mongoDb": {
+           "id": "mongo_cred_1",
+           "name": "Local Mongo"
+         }
+       }
+    },
+    {
+       "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+       },
+       "name": "Return Data",
+       "type": "n8n-nodes-base.respondToWebhook",
+       "typeVersion": 1,
+       "position": [500, 700]
+    },
+    {
+       "parameters": {
+          "httpMethod": "GET",
+          "path": "get-failed",
+          "responseMode": "responseNode",
+          "options": {}
+       },
+       "name": "Webhook Failed",
+       "type": "n8n-nodes-base.webhook",
+       "typeVersion": 1,
+       "position": [100, 900]
+    },
+    {
+       "parameters": {
+          "operation": "find",
+          "collection": "customers",
+          "query": "{ \"status\": \"failed\" }",
+          "options": {
+             "limit": 50,
+             "sort": { "requestedAt": -1 }
+          }
+       },
+       "name": "Find Failed",
+       "type": "n8n-nodes-base.mongoDb",
+       "position": [300, 900],
+       "credentials": {
+         "mongoDb": {
+           "id": "mongo_cred_1",
+           "name": "Local Mongo"
+         }
+       }
+    },
+    {
+       "parameters": {
+          "respondWith": "json",
+          "responseBody": "={{ $json }}",
+          "options": {}
+       },
+       "name": "Return Failed",
+       "type": "n8n-nodes-base.respondToWebhook",
+       "typeVersion": 1,
+       "position": [500, 900]
+    }
+  ],
+  "connections": {
+    "Webhook Register": {
+      "main": [[{"node": "Add Metadata", "type": "main", "index": 0}]]
+    },
+    "Add Metadata": {
+      "main": [[{"node": "Mongo Insert", "type": "main", "index": 0}]]
+    },
+    "Mongo Insert": {
+      "main": [[{"node": "Respond API", "type": "main", "index": 0}]]
+    },
+    "Webhook Upload": {
+      "main": [[{"node": "Get Customer", "type": "main", "index": 0}]]
+    },
+    "Get Customer": {
+      "main": [[{"node": "WAHA Send", "type": "main", "index": 0}]]
+    },
+    "WAHA Send": {
+      "main": [[{"node": "Mark Complete", "type": "main", "index": 0}]]
+    },
+    "Mark Complete": {
+      "main": [[{"node": "Respond Upload", "type": "main", "index": 0}]]
+    },
+    "Webhook Get": {
+       "main": [[{"node": "Find Pending", "type": "main", "index": 0}]]
+    },
+    "Find Pending": {
+       "main": [[{"node": "Return Data", "type": "main", "index": 0}]]
+    },
+    "Webhook Failed": {
+       "main": [[{"node": "Find Failed", "type": "main", "index": 0}]]
+    },
+    "Find Failed": {
+       "main": [[{"node": "Return Failed", "type": "main", "index": 0}]]
+    }
+  }
+}
