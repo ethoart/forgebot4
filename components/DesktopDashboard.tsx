@@ -161,7 +161,7 @@ const DesktopDashboard: React.FC = () => {
                   </button>
                   
                   <h2 className="text-xl font-bold mb-2">Connect WhatsApp</h2>
-                  <p className="text-sm text-slate-500 mb-6">Open WhatsApp > Linked Devices > Link a Device</p>
+                  <p className="text-sm text-slate-500 mb-6">Open WhatsApp &gt; Linked Devices &gt; Link a Device</p>
                   
                   <div className="bg-slate-100 p-4 rounded-xl aspect-square flex items-center justify-center mb-4">
                       {waStatus.status === 'QR_READY' && waStatus.qr ? (
