@@ -40,7 +40,7 @@ const connectWithRetry = async () => {
   process.exit(1);
 };
 
-// Define Models immediately so they are available
+// Define Models immediately
 const CustomerSchema = new mongoose.Schema({
   customerName: String,
   phoneNumber: String,
@@ -52,7 +52,7 @@ const CustomerSchema = new mongoose.Schema({
 });
 const Customer = mongoose.model('Customer', CustomerSchema);
 
-// Start DB connection in background
+// Start DB connection
 connectWithRetry();
 
 // --- WHATSAPP CLIENT SETUP ---
@@ -60,101 +60,126 @@ console.log("🔄 Initializing Native WhatsApp Client...");
 
 const AUTH_PATH = '/app/wwebjs_auth';
 
-// CRITICAL FIX: Clean up SingletonLock if it exists from a crashed session
-const cleanUpLocks = () => {
-    const sessionDir = path.join(AUTH_PATH, 'session');
-    if (fs.existsSync(sessionDir)) {
-        const lockFile = path.join(sessionDir, 'SingletonLock');
-        if (fs.existsSync(lockFile)) {
-            console.log("⚠️ Found stale SingletonLock. Removing it to prevent startup crash...");
+// CRITICAL FIX: Recursive Lock Cleaner
+const cleanUpLocks = (dir) => {
+    if (!fs.existsSync(dir)) return;
+    
+    try {
+        const items = fs.readdirSync(dir);
+        for (const item of items) {
+            const fullPath = path.join(dir, item);
             try {
-                fs.unlinkSync(lockFile);
-                console.log("✅ SingletonLock removed.");
+                const stat = fs.lstatSync(fullPath);
+                
+                if (stat.isDirectory()) {
+                    cleanUpLocks(fullPath);
+                } else if (item === 'SingletonLock' || item === 'SingletonCookie' || item === 'SingletonSocket') {
+                    fs.unlinkSync(fullPath);
+                    console.log(`✅ Removed stale lock file: ${fullPath}`);
+                }
             } catch (e) {
-                console.error("❌ Failed to remove lock file:", e);
+                // Ignore errors accessing specific files (race conditions)
             }
         }
+    } catch (e) {
+        console.error(`Error traversing directory ${dir}:`, e);
+    }
+};
+
+let qrCodeData = null;
+let clientStatus = 'INITIALIZING'; // INITIALIZING, QR_READY, AUTHENTICATED, READY, DISCONNECTED
+let client = null;
+
+const initializeClient = async () => {
+    // 1. Pre-emptive Clean
+    cleanUpLocks(AUTH_PATH);
+
+    // 2. Configure Client
+    client = new Client({
+        authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
+        puppeteer: {
+            headless: true,
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-software-rasterizer'
+            ]
+        },
+        webVersionCache: {
+            type: 'remote',
+            remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+        }
+    });
+
+    // 3. Setup Event Listeners
+    client.on('qr', (qr) => {
+        console.log('⚡ QR RECEIVED');
+        qrcode.toDataURL(qr, (err, url) => {
+            if (!err) {
+                qrCodeData = url;
+                clientStatus = 'QR_READY';
+            }
+        });
+    });
+
+    client.on('ready', () => {
+        console.log('✅ WhatsApp Client is READY!');
+        clientStatus = 'READY';
+        qrCodeData = null;
+    });
+
+    client.on('authenticated', () => {
+        console.log('🔐 WhatsApp Authenticated');
+        clientStatus = 'AUTHENTICATED';
+        qrCodeData = null;
+    });
+
+    client.on('auth_failure', (msg) => {
+        console.error('❌ Auth Failure', msg);
+        clientStatus = 'DISCONNECTED';
+    });
+
+    client.on('disconnected', (reason) => {
+        console.log('❌ WhatsApp Disconnected:', reason);
+        clientStatus = 'DISCONNECTED';
+        // Destroy and Re-initialize
+        setTimeout(async () => {
+             console.log('🔄 Reloading client...');
+             try { await client.destroy(); } catch(e) {}
+             initializeClient();
+        }, 5000);
+    });
+
+    // 4. Initialize with Retry Logic
+    try {
+        await client.initialize();
+    } catch (err) {
+        console.error("💥 Client Initialization Failed:", err.message);
         
-        // Also remove SingletonCookie if present (less common but possible)
-        const cookieFile = path.join(sessionDir, 'SingletonCookie');
-         if (fs.existsSync(cookieFile)) {
-            try { fs.unlinkSync(cookieFile); } catch(e) {}
+        // Check for Lock Errors (Code 21, SingletonLock)
+        const isLockError = err.message.includes('Code: 21') || 
+                            err.message.includes('SingletonLock') ||
+                            err.message.includes('session');
+
+        if (isLockError) {
+             console.log("🧹 Lock file issue detected. Cleaning and retrying...");
+             cleanUpLocks(AUTH_PATH);
+             setTimeout(initializeClient, 5000);
+        } else {
+             console.log("⚠️ Unexpected error. Retrying in 10s...");
+             setTimeout(initializeClient, 10000);
         }
     }
 };
 
-cleanUpLocks();
-
-let qrCodeData = null;
-let clientStatus = 'INITIALIZING'; // INITIALIZING, QR_READY, AUTHENTICATED, READY, DISCONNECTED
-
-const client = new Client({
-    authStrategy: new LocalAuth({ dataPath: AUTH_PATH }),
-    puppeteer: {
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-accelerated-2d-canvas',
-            '--no-first-run',
-            '--no-zygote',
-            '--disable-gpu',
-            '--disable-software-rasterizer'
-        ]
-    },
-    webVersionCache: {
-        type: 'remote',
-        remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-    }
-});
-
-client.on('qr', (qr) => {
-    console.log('⚡ QR RECEIVED');
-    qrcode.toDataURL(qr, (err, url) => {
-        if (!err) {
-            qrCodeData = url;
-            clientStatus = 'QR_READY';
-        }
-    });
-});
-
-client.on('ready', () => {
-    console.log('✅ WhatsApp Client is READY!');
-    clientStatus = 'READY';
-    qrCodeData = null;
-});
-
-client.on('authenticated', () => {
-    console.log('🔐 WhatsApp Authenticated');
-    clientStatus = 'AUTHENTICATED';
-    qrCodeData = null;
-});
-
-client.on('auth_failure', (msg) => {
-    console.error('❌ Auth Failure', msg);
-    clientStatus = 'DISCONNECTED';
-});
-
-client.on('disconnected', (reason) => {
-    console.log('❌ WhatsApp Disconnected:', reason);
-    clientStatus = 'DISCONNECTED';
-    // Re-initialize after a delay
-    setTimeout(() => {
-        console.log('🔄 Re-initializing client...');
-        client.initialize().catch(e => console.error("Re-init failed:", e));
-    }, 5000);
-});
-
-// Initialize safely
-try {
-    client.initialize().catch(err => {
-        console.error("💥 Fatal Client Initialization Error:", err);
-    });
-} catch (e) {
-    console.error("💥 Sync Init Error:", e);
-}
+// Start the Client
+initializeClient();
 
 // --- FILE UPLOAD SETUP ---
 const uploadDir = path.join(__dirname, 'uploads');
@@ -172,7 +197,6 @@ const upload = multer({ storage: storage, limits: { fileSize: 100 * 1024 * 1024 
 
 // --- ROUTES ---
 
-// 1. SYSTEM STATUS
 app.get('/status', (req, res) => {
     res.json({
         status: clientStatus,
@@ -180,7 +204,6 @@ app.get('/status', (req, res) => {
     });
 });
 
-// 2. REGISTER CUSTOMER
 app.post('/register-customer', async (req, res) => {
   try {
     const { name, phone, videoName } = req.body;
@@ -201,13 +224,9 @@ app.post('/register-customer', async (req, res) => {
   }
 });
 
-// 3. GET PENDING
 app.get('/get-pending', async (req, res) => {
   try {
-    // If DB isn't ready, return empty array instead of crashing
-    if (mongoose.connection.readyState !== 1) {
-        return res.json([]);
-    }
+    if (mongoose.connection.readyState !== 1) return res.json([]);
     const docs = await Customer.find({ status: 'pending' }).sort({ requestedAt: 1 }).limit(100);
     const mapped = docs.map(d => ({
       id: d._id,
@@ -224,7 +243,6 @@ app.get('/get-pending', async (req, res) => {
   }
 });
 
-// 4. GET FAILED
 app.get('/get-failed', async (req, res) => {
   try {
     if (mongoose.connection.readyState !== 1) return res.json([]);
@@ -244,36 +262,31 @@ app.get('/get-failed', async (req, res) => {
   }
 });
 
-// 5. UPLOAD & SEND (NATIVE)
 app.post('/upload-document', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
 
   const { requestId, phoneNumber, videoName } = req.body;
   
-  // Allow processing if Authenticated OR Ready. Sometimes 'Ready' event lags.
+  // Allow processing if Authenticated OR Ready.
   if (clientStatus !== 'READY' && clientStatus !== 'AUTHENTICATED') {
       if (req.file.path) fs.unlinkSync(req.file.path);
       return res.status(503).json({ error: 'WhatsApp client is not ready. Please scan QR code.' });
   }
 
-  // Immediate Response
+  // Immediate response
   res.json({ success: true, message: 'Processing started' });
 
-  // Background Process
   const filePath = req.file.path;
   const originalName = req.file.originalname;
 
   try {
     console.log(`🔄 Processing Upload for ID: ${requestId}`);
     
-    // 1. Prepare Number
     let cleanPhone = phoneNumber.replace(/[^0-9]/g, '');
     const chatId = `${cleanPhone}@c.us`;
 
-    // 2. Prepare Media
     const media = MessageMedia.fromFilePath(filePath);
     
-    // 3. Send Message
     console.log(`🚀 Sending Native: ${chatId} | File: ${originalName}`);
     await client.sendMessage(chatId, media, {
         caption: `Hello! Here is your document: ${videoName}`
@@ -300,7 +313,6 @@ app.post('/upload-document', upload.single('file'), async (req, res) => {
 
 app.get('/server-files', (req, res) => res.json([]));
 
-// Start Server immediately
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Backend (Native WhatsApp) listening on port ${PORT}`);
 });
