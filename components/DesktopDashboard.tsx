@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save } from 'lucide-react';
 import { CustomerRequest, Event } from '../types';
-import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer } from '../services/api';
+import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer, updateEvent, deleteEvent } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
 type TabView = 'queue' | 'issues' | 'sent' | 'storage';
@@ -21,6 +21,9 @@ const DesktopDashboard: React.FC = () => {
   const [showCreateEvent, setShowCreateEvent] = useState(false);
   const [newEventName, setNewEventName] = useState('');
   const [newEventFileType, setNewEventFileType] = useState<'video' | 'photo'>('video');
+
+  // Edit Event Modal
+  const [showEditEvent, setShowEditEvent] = useState(false);
 
   // Edit Customer Modal
   const [editingCustomer, setEditingCustomer] = useState<CustomerRequest | null>(null);
@@ -96,6 +99,33 @@ const DesktopDashboard: React.FC = () => {
       setNewEventFileType('video');
       setShowCreateEvent(false);
       fetchData();
+  };
+
+  const handleUpdateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEventId || !newEventName) return;
+    await updateEvent(selectedEventId, newEventName, newEventFileType);
+    setNewEventName('');
+    setNewEventFileType('video');
+    setShowEditEvent(false);
+    fetchData();
+  };
+
+  const handleDeleteEvent = async () => {
+    if (!selectedEventId) return;
+    if (!window.confirm("Are you sure you want to delete this event? This cannot be undone.")) return;
+    await deleteEvent(selectedEventId);
+    setSelectedEventId('');
+    fetchData();
+  };
+
+  const openEditEventModal = () => {
+      const ev = events.find(e => e.id === selectedEventId);
+      if (ev) {
+          setNewEventName(ev.name);
+          setNewEventFileType(ev.defaultFileType);
+          setShowEditEvent(true);
+      }
   };
 
   // --- EDIT MODAL HANDLERS ---
@@ -311,6 +341,52 @@ const DesktopDashboard: React.FC = () => {
                       <div className="flex justify-end gap-2">
                           <button type="button" onClick={() => setShowCreateEvent(false)} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-lg text-sm font-medium">Cancel</button>
                           <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">Create Event</button>
+                      </div>
+                  </form>
+              </div>
+          </div>
+      )}
+
+      {/* MODAL: Edit Event */}
+      {showEditEvent && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm">
+                  <h3 className="text-lg font-bold mb-4">Edit Event Details</h3>
+                  <form onSubmit={handleUpdateEvent}>
+                      <div className="mb-4">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Event Name</label>
+                        <input 
+                            type="text" 
+                            className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={newEventName}
+                            onChange={e => setNewEventName(e.target.value)}
+                            autoFocus
+                        />
+                      </div>
+                      
+                      <div className="mb-6">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Default File Format</label>
+                        <div className="grid grid-cols-2 gap-2">
+                           <button
+                             type="button"
+                             onClick={() => setNewEventFileType('video')}
+                             className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border transition-all ${newEventFileType === 'video' ? 'bg-blue-50 text-blue-600 border-blue-200 ring-2 ring-blue-500/20' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                           >
+                              <Film className="w-4 h-4" /> Video
+                           </button>
+                           <button
+                             type="button"
+                             onClick={() => setNewEventFileType('photo')}
+                             className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border transition-all ${newEventFileType === 'photo' ? 'bg-purple-50 text-purple-600 border-purple-200 ring-2 ring-purple-500/20' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                           >
+                              <ImageIcon className="w-4 h-4" /> Photo
+                           </button>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-2">
+                          <button type="button" onClick={() => setShowEditEvent(false)} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-lg text-sm font-medium">Cancel</button>
+                          <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">Update Event</button>
                       </div>
                   </form>
               </div>
@@ -571,6 +647,16 @@ const DesktopDashboard: React.FC = () => {
                     <button onClick={() => setShowCreateEvent(true)} className="ml-2 p-1 hover:bg-blue-100 rounded text-blue-600" title="Create Event">
                         <Plus className="w-4 h-4" />
                     </button>
+                    {selectedEventId && (
+                        <>
+                            <button onClick={openEditEventModal} className="ml-1 p-1 hover:bg-slate-200 rounded text-slate-500" title="Edit Event">
+                                <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button onClick={handleDeleteEvent} className="ml-1 p-1 hover:bg-red-100 rounded text-red-500" title="Delete Event">
+                                <Trash2 className="w-4 h-4" />
+                            </button>
+                        </>
+                    )}
                </div>
 
                {(waStatus.queueLength || 0) > 0 && (

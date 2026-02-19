@@ -278,6 +278,21 @@ app.post('/create-event', async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.put('/update-event/:id', async (req, res) => {
+    try {
+        const { name, defaultFileType } = req.body;
+        await Event.findByIdAndUpdate(req.params.id, { name, defaultFileType });
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/delete-event/:id', async (req, res) => {
+    try {
+        await Event.findByIdAndDelete(req.params.id);
+        res.json({ success: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/events', async (req, res) => {
     try {
         const events = await Event.find().sort({ created: -1 });

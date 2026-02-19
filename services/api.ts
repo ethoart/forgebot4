@@ -60,6 +60,24 @@ export const createEvent = async (name: string, defaultFileType: 'video' | 'phot
     } catch (e) { return null; }
 };
 
+export const updateEvent = async (id: string, name: string, defaultFileType: 'video' | 'photo'): Promise<boolean> => {
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/update-event/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, defaultFileType })
+        });
+        return res.ok;
+    } catch (e) { return false; }
+};
+
+export const deleteEvent = async (id: string): Promise<boolean> => {
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/delete-event/${id}`, { method: 'DELETE' });
+        return res.ok;
+    } catch (e) { return false; }
+};
+
 // --- CUSTOMERS ---
 
 export const registerCustomer = async (name: string, phone: string, videoName: string, fileType: 'video' | 'photo', eventId: string): Promise<boolean> => {
