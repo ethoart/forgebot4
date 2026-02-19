@@ -46,7 +46,8 @@ const EventSchema = new mongoose.Schema({
     name: String,
     created: { type: Date, default: Date.now },
     isActive: { type: Boolean, default: true },
-    defaultFileType: { type: String, enum: ['video', 'photo'], default: 'video' }
+    defaultFileType: { type: String, enum: ['video', 'photo'], default: 'video' },
+    messageTemplate: { type: String, default: "Hello {{name}}! Here is your document: {{filename}}" }
 });
 const Event = mongoose.model('Event', EventSchema);
 
@@ -134,9 +135,11 @@ const processQueue = async () => {
             media.filename = task.videoName || path.basename(task.filePath);
         }
         
-        // CRITICAL FIX: Send as document to bypass video re-encoding issues
+        // Use custom caption if available, otherwise default
+        const caption = task.caption || `Hello ${task.customerName}! Here is your document: ${task.videoName}`;
+
         await client.sendMessage(chatId, media, {
-            caption: `Hello ${task.customerName}! Here is your document: ${task.videoName}`,
+            caption: caption,
             sendMediaAsDocument: true
         });
 
@@ -148,9 +151,6 @@ const processQueue = async () => {
             completedAt: new Date(),
             error: null
         });
-
-        // 4. WE DO NOT DELETE FILE HERE ANYMORE.
-        // Files are retained for 24h via scheduled task.
 
     } catch (error) {
         console.error(`❌ Send Failed for ${task.customerName}:`, error.message);
@@ -262,10 +262,11 @@ app.get('/status', (req, res) => {
 // Events
 app.post('/create-event', async (req, res) => {
     try {
-        const { name, defaultFileType } = req.body;
+        const { name, defaultFileType, messageTemplate } = req.body;
         const event = new Event({ 
             name, 
-            defaultFileType: defaultFileType || 'video' 
+            defaultFileType: defaultFileType || 'video',
+            messageTemplate: messageTemplate || "Hello {{name}}! Here is your document: {{filename}}"
         });
         await event.save();
         res.json({ 
@@ -273,15 +274,16 @@ app.post('/create-event', async (req, res) => {
             name: event.name, 
             created: event.created, 
             isActive: event.isActive,
-            defaultFileType: event.defaultFileType 
+            defaultFileType: event.defaultFileType,
+            messageTemplate: event.messageTemplate
         });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/update-event/:id', async (req, res) => {
     try {
-        const { name, defaultFileType } = req.body;
-        await Event.findByIdAndUpdate(req.params.id, { name, defaultFileType });
+        const { name, defaultFileType, messageTemplate } = req.body;
+        await Event.findByIdAndUpdate(req.params.id, { name, defaultFileType, messageTemplate });
         res.json({ success: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -301,7 +303,8 @@ app.get('/events', async (req, res) => {
             name: e.name, 
             created: e.created, 
             isActive: e.isActive,
-            defaultFileType: e.defaultFileType 
+            defaultFileType: e.defaultFileType,
+            messageTemplate: e.messageTemplate
         })));
     } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -425,21 +428,34 @@ app.get('/export-csv', async (req, res) => {
 app.post('/upload-document', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file.' });
   
-  const { requestId, phoneNumber, videoName } = req.body;
+  const { requestId } = req.body; // phoneNumber and videoName will be fetched from DB for consistency
   
   // Update DB to Processing AND SAVE FILEPATH for retention
-  await Customer.findByIdAndUpdate(requestId, { 
+  const customer = await Customer.findByIdAndUpdate(requestId, { 
       status: 'processing',
       filePath: req.file.path
-  });
+  }, { new: true }).populate('eventId');
+
+  if (!customer) {
+      return res.status(404).json({ error: 'Customer request not found' });
+  }
+
+  // Generate Caption
+  let caption = `Hello ${customer.customerName}! Here is your document: ${customer.videoName}`;
+  if (customer.eventId && customer.eventId.messageTemplate) {
+      caption = customer.eventId.messageTemplate
+          .replace(/{{name}}/g, customer.customerName)
+          .replace(/{{filename}}/g, customer.videoName);
+  }
 
   // Add to Queue
   messageQueue.push({
-      requestId,
-      phoneNumber,
-      customerName: videoName, 
-      videoName,
-      filePath: req.file.path
+      requestId: customer._id,
+      phoneNumber: customer.phoneNumber,
+      customerName: customer.customerName,
+      videoName: customer.videoName,
+      filePath: req.file.path,
+      caption: caption
   });
 
   // Trigger Processor
@@ -480,7 +496,7 @@ app.delete('/delete-request/:id', async (req, res) => {
 // Retry Request
 app.post('/retry-request/:id', async (req, res) => {
     try {
-        const doc = await Customer.findById(req.params.id);
+        const doc = await Customer.findById(req.params.id).populate('eventId');
         if (!doc) return res.status(404).json({ error: 'Request not found' });
 
         // If filePath is stored in doc, check that first
@@ -502,6 +518,14 @@ app.post('/retry-request/:id', async (req, res) => {
             }
         }
 
+        // Generate Caption
+        let caption = `Hello ${doc.customerName}! Here is your document: ${doc.videoName}`;
+        if (doc.eventId && doc.eventId.messageTemplate) {
+            caption = doc.eventId.messageTemplate
+                .replace(/{{name}}/g, doc.customerName)
+                .replace(/{{filename}}/g, doc.videoName);
+        }
+
         // Reset Status
         doc.status = 'processing';
         doc.error = null;
@@ -513,7 +537,8 @@ app.post('/retry-request/:id', async (req, res) => {
             phoneNumber: doc.phoneNumber,
             customerName: doc.customerName,
             videoName: doc.videoName,
-            filePath: filePath
+            filePath: filePath,
+            caption: caption
         });
         
         processQueue();

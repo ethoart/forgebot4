@@ -49,23 +49,23 @@ export const getEvents = async (): Promise<Event[]> => {
     } catch (e) { return []; }
 };
 
-export const createEvent = async (name: string, defaultFileType: 'video' | 'photo'): Promise<Event | null> => {
+export const createEvent = async (name: string, defaultFileType: 'video' | 'photo', messageTemplate?: string): Promise<Event | null> => {
     try {
         const res = await fetch(`${APP_CONFIG.apiBaseUrl}/create-event`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, defaultFileType })
+            body: JSON.stringify({ name, defaultFileType, messageTemplate })
         });
         return res.ok ? await res.json() : null;
     } catch (e) { return null; }
 };
 
-export const updateEvent = async (id: string, name: string, defaultFileType: 'video' | 'photo'): Promise<boolean> => {
+export const updateEvent = async (id: string, name: string, defaultFileType: 'video' | 'photo', messageTemplate?: string): Promise<boolean> => {
     try {
         const res = await fetch(`${APP_CONFIG.apiBaseUrl}/update-event/${id}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, defaultFileType })
+            body: JSON.stringify({ name, defaultFileType, messageTemplate })
         });
         return res.ok;
     } catch (e) { return false; }

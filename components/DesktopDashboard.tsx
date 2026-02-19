@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save } from 'lucide-react';
+import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save, MessageSquare } from 'lucide-react';
 import { CustomerRequest, Event } from '../types';
 import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer, updateEvent, deleteEvent } from '../services/api';
 import { useNavigate } from 'react-router-dom';
@@ -21,6 +21,7 @@ const DesktopDashboard: React.FC = () => {
   const [showCreateEvent, setShowCreateEvent] = useState(false);
   const [newEventName, setNewEventName] = useState('');
   const [newEventFileType, setNewEventFileType] = useState<'video' | 'photo'>('video');
+  const [newEventMessage, setNewEventMessage] = useState('Hello {{name}}! Here is your document: {{filename}}');
 
   // Edit Event Modal
   const [showEditEvent, setShowEditEvent] = useState(false);
@@ -94,9 +95,10 @@ const DesktopDashboard: React.FC = () => {
   const handleCreateEvent = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!newEventName) return;
-      await createEvent(newEventName, newEventFileType);
+      await createEvent(newEventName, newEventFileType, newEventMessage);
       setNewEventName('');
       setNewEventFileType('video');
+      setNewEventMessage('Hello {{name}}! Here is your document: {{filename}}');
       setShowCreateEvent(false);
       fetchData();
   };
@@ -104,9 +106,10 @@ const DesktopDashboard: React.FC = () => {
   const handleUpdateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEventId || !newEventName) return;
-    await updateEvent(selectedEventId, newEventName, newEventFileType);
+    await updateEvent(selectedEventId, newEventName, newEventFileType, newEventMessage);
     setNewEventName('');
     setNewEventFileType('video');
+    setNewEventMessage('Hello {{name}}! Here is your document: {{filename}}');
     setShowEditEvent(false);
     fetchData();
   };
@@ -124,6 +127,7 @@ const DesktopDashboard: React.FC = () => {
       if (ev) {
           setNewEventName(ev.name);
           setNewEventFileType(ev.defaultFileType);
+          setNewEventMessage(ev.messageTemplate || "Hello {{name}}! Here is your document: {{filename}}");
           setShowEditEvent(true);
       }
   };
@@ -318,7 +322,7 @@ const DesktopDashboard: React.FC = () => {
                         />
                       </div>
                       
-                      <div className="mb-6">
+                      <div className="mb-4">
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Default File Format</label>
                         <div className="grid grid-cols-2 gap-2">
                            <button
@@ -336,6 +340,17 @@ const DesktopDashboard: React.FC = () => {
                               <ImageIcon className="w-4 h-4" /> Photo
                            </button>
                         </div>
+                      </div>
+
+                      <div className="mb-6">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Message Template</label>
+                        <textarea 
+                            className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none text-sm h-24 resize-none"
+                            value={newEventMessage}
+                            onChange={e => setNewEventMessage(e.target.value)}
+                            placeholder="Hello {{name}}! Here is your file..."
+                        />
+                        <p className="text-[10px] text-slate-400 mt-1">Use <b>{'{{name}}'}</b> for customer name and <b>{'{{filename}}'}</b> for file name.</p>
                       </div>
 
                       <div className="flex justify-end gap-2">
@@ -364,7 +379,7 @@ const DesktopDashboard: React.FC = () => {
                         />
                       </div>
                       
-                      <div className="mb-6">
+                      <div className="mb-4">
                         <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Default File Format</label>
                         <div className="grid grid-cols-2 gap-2">
                            <button
@@ -382,6 +397,16 @@ const DesktopDashboard: React.FC = () => {
                               <ImageIcon className="w-4 h-4" /> Photo
                            </button>
                         </div>
+                      </div>
+
+                      <div className="mb-6">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Message Template</label>
+                        <textarea 
+                            className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none text-sm h-24 resize-none"
+                            value={newEventMessage}
+                            onChange={e => setNewEventMessage(e.target.value)}
+                        />
+                        <p className="text-[10px] text-slate-400 mt-1">Use <b>{'{{name}}'}</b> for customer name and <b>{'{{filename}}'}</b> for file name.</p>
                       </div>
 
                       <div className="flex justify-end gap-2">

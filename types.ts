@@ -4,6 +4,7 @@ export interface Event {
   created: string;
   isActive: boolean;
   defaultFileType: 'video' | 'photo';
+  messageTemplate?: string;
 }
 
 export interface CustomerRequest {
