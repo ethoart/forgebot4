@@ -40,10 +40,22 @@ const connectWithRetry = async () => {
   process.exit(1);
 };
 
+// --- MODELS ---
+
+const EventSchema = new mongoose.Schema({
+    name: String,
+    created: { type: Date, default: Date.now },
+    isActive: { type: Boolean, default: true },
+    defaultFileType: { type: String, enum: ['video', 'photo'], default: 'video' }
+});
+const Event = mongoose.model('Event', EventSchema);
+
 const CustomerSchema = new mongoose.Schema({
   customerName: String,
   phoneNumber: String,
   videoName: String,
+  fileType: { type: String, enum: ['video', 'photo'], default: 'video' },
+  eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
   status: { type: String, default: 'pending' },
   error: String,
   requestedAt: { type: Date, default: Date.now },
@@ -213,25 +225,106 @@ app.get('/status', (req, res) => {
     res.json({ status: clientStatus, qr: qrCodeData, queueLength: messageQueue.length });
 });
 
+// Events
+app.post('/create-event', async (req, res) => {
+    try {
+        const { name, defaultFileType } = req.body;
+        const event = new Event({ 
+            name, 
+            defaultFileType: defaultFileType || 'video' 
+        });
+        await event.save();
+        res.json({ 
+            id: event._id, 
+            name: event.name, 
+            created: event.created, 
+            isActive: event.isActive,
+            defaultFileType: event.defaultFileType 
+        });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/events', async (req, res) => {
+    try {
+        const events = await Event.find().sort({ created: -1 });
+        res.json(events.map(e => ({ 
+            id: e._id, 
+            name: e.name, 
+            created: e.created, 
+            isActive: e.isActive,
+            defaultFileType: e.defaultFileType 
+        })));
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Register
 app.post('/register-customer', async (req, res) => {
   try {
-    const { name, phone, videoName } = req.body;
-    const newCustomer = new Customer({ customerName: name, phoneNumber: phone, videoName });
+    const { name, phone, videoName, fileType, eventId } = req.body;
+    const newCustomer = new Customer({ 
+        customerName: name, 
+        phoneNumber: phone, 
+        videoName,
+        fileType: fileType || 'video',
+        eventId: eventId || null
+    });
     await newCustomer.save();
     res.json({ success: true, id: newCustomer._id });
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-// Getters
+// Getters (Pending, Failed, Completed)
 app.get('/get-pending', async (req, res) => {
-  const docs = await Customer.find({ status: 'pending' }).sort({ requestedAt: 1 }).limit(100);
-  res.json(docs.map(d => ({ id: d._id, customerName: d.customerName, phoneNumber: d.phoneNumber, videoName: d.videoName, status: d.status, requestedAt: d.requestedAt })));
+  const query = { status: 'pending' };
+  if (req.query.eventId) query.eventId = req.query.eventId;
+  
+  const docs = await Customer.find(query).sort({ requestedAt: 1 }).limit(100);
+  res.json(docs.map(d => ({ 
+      id: d._id, 
+      customerName: d.customerName, 
+      phoneNumber: d.phoneNumber, 
+      videoName: d.videoName, 
+      fileType: d.fileType,
+      eventId: d.eventId,
+      status: d.status, 
+      requestedAt: d.requestedAt 
+  })));
 });
 
 app.get('/get-failed', async (req, res) => {
-  const docs = await Customer.find({ status: 'failed' }).sort({ requestedAt: -1 }).limit(50);
-  res.json(docs.map(d => ({ id: d._id, customerName: d.customerName, phoneNumber: d.phoneNumber, videoName: d.videoName, status: d.status, requestedAt: d.requestedAt, error: d.error })));
+  const query = { status: 'failed' };
+  if (req.query.eventId) query.eventId = req.query.eventId;
+
+  const docs = await Customer.find(query).sort({ requestedAt: -1 }).limit(50);
+  res.json(docs.map(d => ({ 
+      id: d._id, 
+      customerName: d.customerName, 
+      phoneNumber: d.phoneNumber, 
+      videoName: d.videoName, 
+      fileType: d.fileType,
+      eventId: d.eventId,
+      status: d.status, 
+      requestedAt: d.requestedAt, 
+      error: d.error 
+  })));
+});
+
+app.get('/get-completed', async (req, res) => {
+  const query = { status: 'completed' };
+  if (req.query.eventId) query.eventId = req.query.eventId;
+
+  const docs = await Customer.find(query).sort({ completedAt: -1 }).limit(50);
+  res.json(docs.map(d => ({ 
+      id: d._id, 
+      customerName: d.customerName, 
+      phoneNumber: d.phoneNumber, 
+      videoName: d.videoName, 
+      fileType: d.fileType,
+      eventId: d.eventId,
+      status: d.status, 
+      requestedAt: d.requestedAt, 
+      completedAt: d.completedAt
+  })));
 });
 
 // Upload & Queue
@@ -247,7 +340,7 @@ app.post('/upload-document', upload.single('file'), async (req, res) => {
   messageQueue.push({
       requestId,
       phoneNumber,
-      customerName: videoName, // Using videoName as rough name if needed, or query DB. Ideally pass name.
+      customerName: videoName, // Using videoName as rough name if needed
       videoName,
       filePath: req.file.path
   });
@@ -293,12 +386,6 @@ app.post('/retry-request/:id', async (req, res) => {
         const doc = await Customer.findById(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Request not found' });
 
-        // Check if file exists in uploads
-        // We assume filename matches videoName roughly or we need to find it. 
-        // In this simple system, we rely on the file still being there matching the videoName logic if possible, 
-        // OR we can't retry if the file is gone. 
-        // Improvement: We iterate files to find a match.
-        
         const files = fs.readdirSync(uploadDir);
         // Clean matching logic
         const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');

@@ -1,10 +1,21 @@
+export interface Event {
+  id: string;
+  name: string;
+  created: string;
+  isActive: boolean;
+  defaultFileType: 'video' | 'photo';
+}
+
 export interface CustomerRequest {
   id: string;
   customerName: string;
   phoneNumber: string;
   videoName: string; // This is the key identifier
+  fileType: 'video' | 'photo';
+  eventId: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   requestedAt: string; // ISO Date string
+  completedAt?: string;
 }
 
 export interface UploadStatus {

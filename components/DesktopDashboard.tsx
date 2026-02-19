@@ -1,20 +1,27 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw } from 'lucide-react';
-import { CustomerRequest } from '../types';
-import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus } from '../services/api';
-import { formatDistanceToNow } from 'date-fns';
-import { useNavigate, Link } from 'react-router-dom';
+import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film } from 'lucide-react';
+import { CustomerRequest, Event } from '../types';
+import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests } from '../services/api';
+import { useNavigate } from 'react-router-dom';
 
-type TabView = 'queue' | 'issues' | 'storage';
+type TabView = 'queue' | 'issues' | 'sent' | 'storage';
 
 const DesktopDashboard: React.FC = () => {
   const [requests, setRequests] = useState<CustomerRequest[]>([]);
   const [failedRequests, setFailedRequests] = useState<CustomerRequest[]>([]);
+  const [completedRequests, setCompletedRequests] = useState<CustomerRequest[]>([]);
   const [serverFiles, setServerFiles] = useState<ServerFile[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
+  const [selectedEventId, setSelectedEventId] = useState<string>(''); // '' means All Events
   
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<TabView>('queue');
   
+  // Create Event Modal
+  const [showCreateEvent, setShowCreateEvent] = useState(false);
+  const [newEventName, setNewEventName] = useState('');
+  const [newEventFileType, setNewEventFileType] = useState<'video' | 'photo'>('video');
+
   // Connection Status
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ status: 'INITIALIZING', qr: null, queueLength: 0 });
   const [showQr, setShowQr] = useState(false);
@@ -31,17 +38,26 @@ const DesktopDashboard: React.FC = () => {
     if (isProcessingBatch) return;
 
     setIsLoading(true);
-    const pendingData = await getPendingRequests();
+    
+    // Fetch Events first
+    const eventsData = await getEvents();
+    setEvents(eventsData);
+    
+    // Fetch Lists based on selected event
+    const pendingData = await getPendingRequests(selectedEventId);
     setRequests(pendingData);
     
-    const failedData = await getFailedRequests();
+    const failedData = await getFailedRequests(selectedEventId);
     setFailedRequests(failedData);
+    
+    const completedData = await getCompletedRequests(selectedEventId);
+    setCompletedRequests(completedData);
 
     const files = await getServerFiles();
     setServerFiles(files);
     
     setIsLoading(false);
-  }, [isProcessingBatch]);
+  }, [isProcessingBatch, selectedEventId]);
 
   // Status Polling
   useEffect(() => {
@@ -68,6 +84,16 @@ const DesktopDashboard: React.FC = () => {
       navigate('/login');
   };
 
+  const handleCreateEvent = async (e: React.FormEvent) => {
+      e.preventDefault();
+      if(!newEventName) return;
+      await createEvent(newEventName, newEventFileType);
+      setNewEventName('');
+      setNewEventFileType('video');
+      setShowCreateEvent(false);
+      fetchData();
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -89,16 +115,19 @@ const DesktopDashboard: React.FC = () => {
     const tasks: { file: File, request: CustomerRequest }[] = [];
     let unmatchedCount = 0;
 
-    // 1. Prepare Tasks (Match files to requests) - Instant
+    // 1. Prepare Tasks (Match files to requests)
     for (const file of fileList) {
         const rawFileName = file.name;
         const nameWithoutExt = rawFileName.substring(0, rawFileName.lastIndexOf('.')) || rawFileName;
         const normFileName = normalize(nameWithoutExt);
 
         // Find match in queue
+        // We match if the file name is contained in the requested video name OR vice versa
+        // Important: check if extension matches request type? 
+        // For now, loose matching on name is usually sufficient, but let's prioritize correct pending requests
         const match = requests.find(r => {
             if (usedRequestIds.has(r.id) || r.status !== 'pending') return false;
-            const normVideoName = normalize(r.videoName);
+            const normVideoName = normalize(r.videoName.substring(0, r.videoName.lastIndexOf('.')) || r.videoName);
             return normFileName.includes(normVideoName) || normVideoName.includes(normFileName);
         });
 
@@ -110,12 +139,10 @@ const DesktopDashboard: React.FC = () => {
         }
     }
     
-    // Update unmatched immediately
     setBatchProgress(prev => ({ ...prev, unmatched: unmatchedCount }));
 
     // 2. Execute with High-Speed Dynamic Concurrency Pool
-    // This removes the "batch wait" time. As soon as one upload finishes, the next starts.
-    const CONCURRENCY_LIMIT = 8; // Aggressive but safe for most browsers
+    const CONCURRENCY_LIMIT = 8;
     let processedCount = 0;
     let successCount = 0;
     let failCount = 0;
@@ -123,7 +150,6 @@ const DesktopDashboard: React.FC = () => {
     const activePromises = new Set<Promise<void>>();
 
     for (const task of tasks) {
-        // Create the promise
         const promise = (async () => {
             const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
             if (success) successCount++;
@@ -138,22 +164,16 @@ const DesktopDashboard: React.FC = () => {
             }));
         })();
 
-        // Add to pool
         activePromises.add(promise);
-        
-        // Remove from pool when done
         promise.then(() => activePromises.delete(promise));
 
-        // If pool is full, wait for the fastest one to finish
         if (activePromises.size >= CONCURRENCY_LIMIT) {
             await Promise.race(activePromises);
         }
     }
 
-    // Wait for all remaining uploads
     await Promise.all(activePromises);
 
-    // Final Report
     const totalProcessed = tasks.length + unmatchedCount;
     setBatchProgress(prev => ({ ...prev, current: totalProcessed, successes: successCount, failed: failCount, unmatched: unmatchedCount }));
 
@@ -162,7 +182,7 @@ const DesktopDashboard: React.FC = () => {
     
     setLastBatchReport({ message, type });
     setIsProcessingBatch(false);
-    fetchData(); // Refresh list immediately
+    fetchData(); 
     e.target.value = '';
     
     setTimeout(() => {
@@ -178,7 +198,7 @@ const DesktopDashboard: React.FC = () => {
           alert("Retrying... Item moved to Queue.");
           fetchData();
       } else {
-          alert("Failed to retry: " + res.message + ". File might be deleted.");
+          alert("Failed to retry: " + res.message);
       }
   };
 
@@ -196,7 +216,17 @@ const DesktopDashboard: React.FC = () => {
       fetchData();
   };
 
-  const filteredRequests = (activeTab === 'queue' ? requests : failedRequests).filter(r => 
+  // Helper to determine list based on tab
+  const getList = () => {
+      switch(activeTab) {
+          case 'queue': return requests;
+          case 'issues': return failedRequests;
+          case 'sent': return completedRequests;
+          default: return [];
+      }
+  };
+
+  const listData = getList().filter(r => 
     r.customerName.toLowerCase().includes(searchTerm.toLowerCase()) ||
     r.videoName.toLowerCase().includes(searchTerm.toLowerCase())
   );
@@ -204,6 +234,53 @@ const DesktopDashboard: React.FC = () => {
   return (
     <div className="flex h-screen bg-white font-sans text-slate-900 overflow-hidden relative">
       
+      {/* MODAL: Create Event */}
+      {showCreateEvent && (
+          <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm">
+                  <h3 className="text-lg font-bold mb-4">Create New Event</h3>
+                  <form onSubmit={handleCreateEvent}>
+                      <div className="mb-4">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Event Name</label>
+                        <input 
+                            type="text" 
+                            placeholder="e.g. Wedding John & Jane" 
+                            className="w-full border border-slate-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                            value={newEventName}
+                            onChange={e => setNewEventName(e.target.value)}
+                            autoFocus
+                        />
+                      </div>
+                      
+                      <div className="mb-6">
+                        <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Default File Format</label>
+                        <div className="grid grid-cols-2 gap-2">
+                           <button
+                             type="button"
+                             onClick={() => setNewEventFileType('video')}
+                             className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border transition-all ${newEventFileType === 'video' ? 'bg-blue-50 text-blue-600 border-blue-200 ring-2 ring-blue-500/20' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                           >
+                              <Film className="w-4 h-4" /> Video
+                           </button>
+                           <button
+                             type="button"
+                             onClick={() => setNewEventFileType('photo')}
+                             className={`px-3 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 border transition-all ${newEventFileType === 'photo' ? 'bg-purple-50 text-purple-600 border-purple-200 ring-2 ring-purple-500/20' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                           >
+                              <ImageIcon className="w-4 h-4" /> Photo
+                           </button>
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-2">
+                          <button type="button" onClick={() => setShowCreateEvent(false)} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-lg text-sm font-medium">Cancel</button>
+                          <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium">Create Event</button>
+                      </div>
+                  </form>
+              </div>
+          </div>
+      )}
+
       {/* QR CODE MODAL */}
       {showQr && (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
@@ -244,13 +321,16 @@ const DesktopDashboard: React.FC = () => {
 
         {/* TABS */}
         <div className="flex p-2 gap-1 bg-slate-50 border-b border-slate-200">
-          <button onClick={() => setActiveTab('queue')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-2 transition-all ${activeTab === 'queue' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
+          <button onClick={() => setActiveTab('queue')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-1 transition-all ${activeTab === 'queue' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-500 hover:bg-slate-100'}`}>
             Queue <span className="bg-slate-100 px-1.5 rounded-full text-[10px] text-slate-600 border border-slate-200">{requests.length}</span>
           </button>
-          <button onClick={() => setActiveTab('issues')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-2 transition-all ${activeTab === 'issues' ? 'bg-red-50 shadow-sm text-red-600 border border-red-100' : 'text-slate-500 hover:bg-slate-100'}`}>
+          <button onClick={() => setActiveTab('issues')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-1 transition-all ${activeTab === 'issues' ? 'bg-red-50 shadow-sm text-red-600 border border-red-100' : 'text-slate-500 hover:bg-slate-100'}`}>
             Issues <span className={`px-1.5 rounded-full text-[10px] border ${failedRequests.length > 0 ? 'bg-red-100 text-red-700 border-red-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>{failedRequests.length}</span>
           </button>
-          <button onClick={() => setActiveTab('storage')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-2 transition-all ${activeTab === 'storage' ? 'bg-purple-50 shadow-sm text-purple-600 border border-purple-100' : 'text-slate-500 hover:bg-slate-100'}`}>
+           <button onClick={() => setActiveTab('sent')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-1 transition-all ${activeTab === 'sent' ? 'bg-green-50 shadow-sm text-green-600 border border-green-100' : 'text-slate-500 hover:bg-slate-100'}`}>
+            Sent
+          </button>
+          <button onClick={() => setActiveTab('storage')} className={`flex-1 py-1.5 text-xs font-semibold rounded-md flex items-center justify-center gap-1 transition-all ${activeTab === 'storage' ? 'bg-purple-50 shadow-sm text-purple-600 border border-purple-100' : 'text-slate-500 hover:bg-slate-100'}`}>
             Storage
           </button>
         </div>
@@ -291,18 +371,18 @@ const DesktopDashboard: React.FC = () => {
                     ))
                 )
              ) : (
-                // QUEUE / ISSUES LIST
-                isLoading && filteredRequests.length === 0 ? (
+                // REQUESTS LIST (Queue, Issues, Sent)
+                isLoading && listData.length === 0 ? (
                     <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-slate-400"/></div>
-                 ) : !isLoading && filteredRequests.length === 0 ? (
+                 ) : !isLoading && listData.length === 0 ? (
                     <div className="text-center py-12 text-slate-400">
                       <Filter className="w-8 h-8 mx-auto mb-2 opacity-50" />
                       <p className="text-sm">No items found</p>
                     </div>
                  ) : (
-                    filteredRequests.map((req) => (
+                    listData.map((req) => (
                       <div key={req.id} className={`group p-4 rounded-xl bg-white border shadow-sm transition-all relative overflow-hidden ${activeTab === 'issues' ? 'border-red-100' : 'border-slate-100'}`}>
-                        <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity ${activeTab === 'issues' ? 'bg-red-500' : 'bg-blue-500'}`}></div>
+                        <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity ${activeTab === 'issues' ? 'bg-red-500' : activeTab === 'sent' ? 'bg-green-500' : 'bg-blue-500'}`}></div>
                         
                         <div className="flex justify-between items-start mb-1">
                           <span className="font-semibold text-slate-800 text-sm truncate pr-2">{req.customerName}</span>
@@ -319,7 +399,11 @@ const DesktopDashboard: React.FC = () => {
                         </div>
                         
                         <div className="flex items-center text-xs text-slate-500 mt-1">
-                          <FileVideo className={`w-3 h-3 mr-1.5 ${activeTab === 'issues' ? 'text-red-400' : 'text-blue-500'}`} />
+                          {req.fileType === 'photo' ? (
+                             <ImageIcon className={`w-3 h-3 mr-1.5 ${activeTab === 'issues' ? 'text-red-400' : activeTab === 'sent' ? 'text-green-500' : 'text-blue-500'}`} />
+                          ) : (
+                             <FileVideo className={`w-3 h-3 mr-1.5 ${activeTab === 'issues' ? 'text-red-400' : activeTab === 'sent' ? 'text-green-500' : 'text-blue-500'}`} />
+                          )}
                           <span className="font-mono bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100 truncate max-w-[150px]">{req.videoName}</span>
                         </div>
                         
@@ -327,6 +411,13 @@ const DesktopDashboard: React.FC = () => {
                           <div className="mt-2 pt-2 border-t border-red-50 flex items-start gap-1.5 text-[11px] text-red-600 bg-red-50/50 p-1.5 rounded">
                             <AlertCircle className="w-3 h-3 flex-shrink-0 mt-0.5" />
                             <span className="break-words leading-tight">{(req as any).error}</span>
+                          </div>
+                        )}
+                        
+                         {activeTab === 'sent' && (
+                          <div className="mt-2 pt-1 border-t border-slate-50 flex items-center justify-between text-[10px] text-slate-400">
+                             <span>{(req as any).completedAt ? new Date((req as any).completedAt).toLocaleTimeString() : ''}</span>
+                             <CheckCircle className="w-3 h-3 text-green-500" />
                           </div>
                         )}
                       </div>
@@ -348,11 +439,30 @@ const DesktopDashboard: React.FC = () => {
         
         {/* Top Navigation Bar */}
         <header className="h-16 border-b border-slate-100 flex items-center justify-between px-8 bg-white/80 backdrop-blur-sm z-10 sticky top-0">
-           <div className="flex items-center gap-4">
+           <div className="flex items-center gap-6">
                <h1 className="font-bold text-xl text-slate-900 flex items-center gap-2">
                  <Layers className="w-5 h-5 text-blue-500" />
                  Upload Center
                </h1>
+               
+               {/* Event Filter */}
+               <div className="flex items-center bg-slate-50 rounded-lg p-1 border border-slate-200">
+                    <div className="px-3 text-xs font-bold text-slate-500 uppercase">Event:</div>
+                    <select 
+                        value={selectedEventId} 
+                        onChange={(e) => setSelectedEventId(e.target.value)}
+                        className="bg-transparent text-sm font-semibold text-slate-700 outline-none cursor-pointer"
+                    >
+                        <option value="">All Events</option>
+                        {events.map(ev => (
+                            <option key={ev.id} value={ev.id}>{ev.name}</option>
+                        ))}
+                    </select>
+                    <button onClick={() => setShowCreateEvent(true)} className="ml-2 p-1 hover:bg-blue-100 rounded text-blue-600" title="Create Event">
+                        <Plus className="w-4 h-4" />
+                    </button>
+               </div>
+
                {(waStatus.queueLength || 0) > 0 && (
                    <span className="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-bold rounded-full flex items-center animate-pulse">
                        Sending: {waStatus.queueLength} in Queue
@@ -417,9 +527,9 @@ const DesktopDashboard: React.FC = () => {
                       <div className="bg-slate-50 p-6 rounded-full mb-6 group-hover:scale-110 group-hover:bg-blue-100 transition-all duration-300">
                          <UploadCloud className="w-12 h-12 text-slate-400 group-hover:text-blue-600 transition-colors" />
                       </div>
-                      <h3 className="text-2xl font-bold text-slate-800 mb-2">Drag & Drop Videos</h3>
+                      <h3 className="text-2xl font-bold text-slate-800 mb-2">Drag & Drop Files</h3>
                       <p className="text-slate-500 text-sm max-w-sm text-center px-4 leading-relaxed">
-                         Files match automatically. Sent via safe queue (5-15s delay). <br/>Ensure WhatsApp is <b>Connected</b>.
+                         Videos and Photos match automatically. <br/>Sent via safe queue (5-15s delay). <br/>Ensure WhatsApp is <b>Connected</b>.
                       </p>
                     </>
                   )}

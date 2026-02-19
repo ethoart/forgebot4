@@ -1,15 +1,62 @@
-import React, { useState } from 'react';
-import { User, Video, Check, Loader2, ChevronLeft, Globe, Phone } from 'lucide-react';
-import { registerCustomer } from '../services/api';
+import React, { useState, useEffect } from 'react';
+import { User, Video, Check, Loader2, ChevronLeft, Image as ImageIcon, Film, Calendar } from 'lucide-react';
+import { registerCustomer, getEvents } from '../services/api';
 import { Link } from 'react-router-dom';
+import { Event } from '../types';
+
+const COUNTRY_CODES = [
+    { code: '+94', label: '🇱🇰' },
+    { code: '+91', label: '🇮🇳' },
+    { code: '+1', label: '🇺🇸' },
+    { code: '+44', label: '🇬🇧' },
+    { code: '+971', label: '🇦🇪' },
+    { code: '+61', label: '🇦🇺' },
+    { code: '+65', label: '🇸🇬' },
+    { code: '+60', label: '🇲🇾' },
+];
 
 const MobileRegister: React.FC = () => {
-  const [formData, setFormData] = useState({ name: '', phone: '', videoName: '' });
+  const [formData, setFormData] = useState({ name: '', phone: '', videoName: '', fileType: 'video' as 'video'|'photo', eventId: '' });
+  const [countryCode, setCountryCode] = useState('+94');
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success'>('idle');
+  const [events, setEvents] = useState<Event[]>([]);
+  const [loadingEvents, setLoadingEvents] = useState(true);
+
+  useEffect(() => {
+      const loadEvents = async () => {
+          const data = await getEvents();
+          setEvents(data);
+          // Default to first active event if exists
+          const active = data.find(e => e.isActive);
+          if (active) {
+              setFormData(prev => ({ ...prev, eventId: active.id, fileType: active.defaultFileType || 'video' }));
+          } else if (data.length > 0) {
+              setFormData(prev => ({ ...prev, eventId: data[0].id, fileType: data[0].defaultFileType || 'video' }));
+          }
+          setLoadingEvents(false);
+      };
+      loadEvents();
+  }, []);
+
+  // Watch for event changes to update default file type
+  useEffect(() => {
+    if (formData.eventId) {
+        const selectedEvent = events.find(e => e.id === formData.eventId);
+        if (selectedEvent) {
+             setFormData(prev => ({ ...prev, fileType: selectedEvent.defaultFileType || 'video' }));
+        }
+    }
+  }, [formData.eventId, events]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.name || !formData.phone || !formData.videoName) return;
+    
+    // Safety check for event
+    if (events.length > 0 && !formData.eventId) {
+        alert("Please select an event");
+        return;
+    }
 
     setStatus('submitting');
     
@@ -21,15 +68,32 @@ const MobileRegister: React.FC = () => {
         cleanPhone = cleanPhone.substring(1);
     }
     
-    // Default country code: 94
-    const finalPhone = '94' + cleanPhone;
+    // Combine selected country code (removing +) with cleaned phone
+    const prefix = countryCode.replace('+', '');
+    const finalPhone = prefix + cleanPhone;
 
-    const success = await registerCustomer(formData.name, finalPhone, formData.videoName);
+    // Logic to append extension automatically
+    let finalFileName = formData.videoName;
+    const ext = formData.fileType === 'photo' ? '.jpg' : '.mp4';
+    
+    // Check if filename already ends with the correct extension
+    if (!finalFileName.toLowerCase().endsWith(ext)) {
+        finalFileName = finalFileName + ext;
+    }
+
+    const success = await registerCustomer(
+        formData.name, 
+        finalPhone, 
+        finalFileName, 
+        formData.fileType,
+        formData.eventId
+    );
     
     if (success) {
       setStatus('success');
       setTimeout(() => {
-        setFormData({ name: '', phone: '', videoName: '' });
+        // Keep event, country code and filetype, reset others
+        setFormData(prev => ({ ...prev, name: '', phone: '', videoName: '' })); 
         setStatus('idle');
       }, 3000);
     } else {
@@ -46,7 +110,7 @@ const MobileRegister: React.FC = () => {
         </div>
         <h2 className="text-3xl font-bold text-white mb-3 tracking-tight">Registered!</h2>
         <p className="text-slate-300 text-lg max-w-xs mx-auto leading-relaxed">
-          We'll send <strong>{formData.videoName}</strong> to {formData.name} soon.
+          We'll send the {formData.fileType} to {formData.name} soon.
         </p>
       </div>
     );
@@ -58,87 +122,131 @@ const MobileRegister: React.FC = () => {
       {/* iOS Header */}
       <div className="pt-12 pb-4 px-6 flex items-center justify-between bg-white/80 backdrop-blur-md sticky top-0 z-40 border-b border-gray-200/50">
         <Link to="/" className="p-2 -ml-2 text-blue-500 font-medium flex items-center">
-           <ChevronLeft className="w-5 h-5 mr-1" /> Back
+           <ChevronLeft className="w-5 h-5 mr-1" /> Home
         </Link>
-        <h1 className="text-lg font-semibold text-gray-900 absolute left-1/2 transform -translate-x-1/2">
-          New Customer
-        </h1>
-        <div className="w-12"></div> {/* Spacer for centering */}
+        <span className="font-semibold text-slate-900">New Registration</span>
+        <div className="w-8"></div>
       </div>
 
-      <div className="flex-1 p-6 pb-12">
+      <div className="flex-1 p-6 pb-20">
         <div className="max-w-md mx-auto space-y-8">
           
-          <div className="text-center mt-4">
-             <div className="w-20 h-20 bg-gradient-to-tr from-blue-500 to-cyan-400 rounded-2xl mx-auto shadow-xl flex items-center justify-center mb-6">
-                <User className="w-10 h-10 text-white" />
+          <div className="text-center space-y-2 mt-4">
+             <div className="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm text-blue-600">
+               <User className="w-8 h-8" />
              </div>
-             <p className="text-gray-500">Enter customer details below.</p>
+             <h1 className="text-2xl font-bold text-slate-900">Customer Details</h1>
+             <p className="text-slate-500">Enter information to queue the file.</p>
           </div>
 
-          <form className="space-y-5" onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} className="space-y-6">
             
-            {/* Input Group */}
-            <div className="space-y-4">
-              <div className="relative group">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <User className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
+            {/* Event Selector */}
+            {!loadingEvents && events.length > 0 && (
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Select Event</label>
+                    <div className="relative">
+                        <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+                        <select 
+                            value={formData.eventId}
+                            onChange={(e) => setFormData({...formData, eventId: e.target.value})}
+                            className="w-full pl-12 pr-4 py-4 bg-white border-2 border-slate-100 rounded-2xl text-slate-900 font-medium focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all appearance-none outline-none"
+                        >
+                            {events.map(ev => (
+                                <option key={ev.id} value={ev.id}>{ev.name}</option>
+                            ))}
+                        </select>
+                    </div>
                 </div>
+            )}
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">Full Name</label>
+              <div className="relative group">
+                <User className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
                 <input
                   type="text"
                   required
-                  className="block w-full pl-12 pr-4 py-4 bg-white border-0 ring-1 ring-gray-200 rounded-2xl text-lg placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/50 focus:outline-none shadow-sm transition-all"
-                  placeholder="Customer Name"
+                  placeholder="e.g. John Doe"
+                  className="w-full pl-12 pr-4 py-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-medium placeholder:text-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 />
               </div>
+            </div>
 
-              <div className="relative group">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none z-10">
-                   {/* Country Code Prefix */}
-                   <span className="text-gray-500 font-bold text-lg border-r border-gray-300 pr-3 mr-1">+94</span>
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">WhatsApp Number</label>
+              <div className="relative group flex items-center bg-white border-2 border-slate-100 rounded-2xl focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 transition-all">
+                
+                <div className="absolute left-4 z-10">
+                    <select 
+                        value={countryCode}
+                        onChange={(e) => setCountryCode(e.target.value)}
+                        className="bg-transparent font-medium text-lg text-slate-700 outline-none appearance-none pr-1 cursor-pointer"
+                    >
+                        {COUNTRY_CODES.map(c => <option key={c.code} value={c.code}>{c.label} {c.code}</option>)}
+                    </select>
                 </div>
+
                 <input
                   type="tel"
                   required
-                  className="block w-full pl-20 pr-4 py-4 bg-white border-0 ring-1 ring-gray-200 rounded-2xl text-lg placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/50 focus:outline-none shadow-sm transition-all"
                   placeholder="77 123 4567"
+                  className="w-full pl-28 pr-4 py-4 bg-transparent text-lg font-medium placeholder:text-slate-300 focus:outline-none font-mono"
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                 />
-                <p className="mt-1.5 text-xs text-slate-400 px-2 text-right">
-                  Enter local number. Country code added automatically.
-                </p>
               </div>
+            </div>
 
+            <div className="space-y-2">
+               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">File Type</label>
+               <div className="grid grid-cols-2 gap-3">
+                   <button
+                     type="button"
+                     onClick={() => setFormData({...formData, fileType: 'video'})}
+                     className={`py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-medium transition-all ${formData.fileType === 'video' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30' : 'bg-white border-2 border-slate-100 text-slate-600'}`}
+                   >
+                       <Film className="w-5 h-5" /> Video (.mp4)
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => setFormData({...formData, fileType: 'photo'})}
+                     className={`py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-medium transition-all ${formData.fileType === 'photo' ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30' : 'bg-white border-2 border-slate-100 text-slate-600'}`}
+                   >
+                       <ImageIcon className="w-5 h-5" /> Photo (.jpg)
+                   </button>
+               </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">File Name</label>
               <div className="relative group">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Video className="h-5 w-5 text-gray-400 group-focus-within:text-blue-500 transition-colors" />
-                </div>
+                <Video className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-blue-500 transition-colors" />
                 <input
                   type="text"
                   required
-                  className="block w-full pl-12 pr-4 py-4 bg-white border-0 ring-1 ring-gray-200 rounded-2xl text-lg placeholder:text-gray-400 focus:ring-2 focus:ring-blue-500/50 focus:outline-none shadow-sm transition-all"
-                  placeholder="Video ID / Name"
+                  placeholder="e.g. 001"
+                  className="w-full pl-12 pr-4 py-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-medium placeholder:text-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none font-mono"
                   value={formData.videoName}
                   onChange={(e) => setFormData({ ...formData, videoName: e.target.value })}
                 />
-                <p className="mt-1.5 text-xs text-gray-400 px-2 text-right">
-                  Matches file name exactly
-                </p>
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 text-sm font-bold bg-slate-100 px-2 py-1 rounded">
+                    {formData.fileType === 'photo' ? '.JPG' : '.MP4'}
+                </div>
               </div>
             </div>
 
             <button
               type="submit"
               disabled={status === 'submitting'}
-              className="w-full mt-8 py-4 px-6 rounded-2xl shadow-lg shadow-blue-500/30 text-lg font-semibold text-white bg-blue-600 active:scale-[0.98] disabled:opacity-70 disabled:scale-100 transition-all flex items-center justify-center"
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 active:scale-[0.98] text-white font-bold text-lg rounded-2xl shadow-xl shadow-blue-500/20 transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center"
             >
               {status === 'submitting' ? (
-                <Loader2 className="animate-spin h-6 w-6" />
+                <Loader2 className="w-6 h-6 animate-spin" />
               ) : (
-                "Save Customer"
+                <>Register Customer</>
               )}
             </button>
           </form>

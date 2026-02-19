@@ -1,5 +1,5 @@
 import { APP_CONFIG } from '../constants';
-import { CustomerRequest } from '../types';
+import { CustomerRequest, Event } from '../types';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -40,30 +40,64 @@ export const getWhatsAppStatus = async (): Promise<WhatsAppStatus> => {
   }
 };
 
-export const registerCustomer = async (name: string, phone: string, videoName: string): Promise<boolean> => {
+// --- EVENTS ---
+
+export const getEvents = async (): Promise<Event[]> => {
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/events`);
+        return res.ok ? await res.json() : [];
+    } catch (e) { return []; }
+};
+
+export const createEvent = async (name: string, defaultFileType: 'video' | 'photo'): Promise<Event | null> => {
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/create-event`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, defaultFileType })
+        });
+        return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+};
+
+// --- CUSTOMERS ---
+
+export const registerCustomer = async (name: string, phone: string, videoName: string, fileType: 'video' | 'photo', eventId: string): Promise<boolean> => {
     try {
       const response = await fetch(`${APP_CONFIG.apiBaseUrl}/register-customer`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, phone, videoName }),
+        body: JSON.stringify({ name, phone, videoName, fileType, eventId }),
       });
       return response.ok;
     } catch (error) { return false; }
 };
 
-export const getPendingRequests = async (): Promise<CustomerRequest[]> => {
+export const getPendingRequests = async (eventId?: string): Promise<CustomerRequest[]> => {
   try {
-    const response = await fetch(`${APP_CONFIG.apiBaseUrl}/get-pending`);
+    const url = eventId ? `${APP_CONFIG.apiBaseUrl}/get-pending?eventId=${eventId}` : `${APP_CONFIG.apiBaseUrl}/get-pending`;
+    const response = await fetch(url);
     return response.ok ? await response.json() : [];
   } catch (error) { return []; }
 };
 
-export const getFailedRequests = async (): Promise<CustomerRequest[]> => {
+export const getFailedRequests = async (eventId?: string): Promise<CustomerRequest[]> => {
   try {
-    const response = await fetch(`${APP_CONFIG.apiBaseUrl}/get-failed`);
+    const url = eventId ? `${APP_CONFIG.apiBaseUrl}/get-failed?eventId=${eventId}` : `${APP_CONFIG.apiBaseUrl}/get-failed`;
+    const response = await fetch(url);
     return response.ok ? await response.json() : [];
   } catch (error) { return []; }
 };
+
+export const getCompletedRequests = async (eventId?: string): Promise<CustomerRequest[]> => {
+  try {
+    const url = eventId ? `${APP_CONFIG.apiBaseUrl}/get-completed?eventId=${eventId}` : `${APP_CONFIG.apiBaseUrl}/get-completed`;
+    const response = await fetch(url);
+    return response.ok ? await response.json() : [];
+  } catch (error) { return []; }
+};
+
+// --- FILES ---
 
 export const uploadDocument = async (requestId: string, file: File, phoneNumber: string): Promise<boolean> => {
   const formData = new FormData();
