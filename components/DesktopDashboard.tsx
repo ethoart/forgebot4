@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film } from 'lucide-react';
+import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save } from 'lucide-react';
 import { CustomerRequest, Event } from '../types';
-import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests } from '../services/api';
+import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
 type TabView = 'queue' | 'issues' | 'sent' | 'storage';
@@ -21,6 +21,10 @@ const DesktopDashboard: React.FC = () => {
   const [showCreateEvent, setShowCreateEvent] = useState(false);
   const [newEventName, setNewEventName] = useState('');
   const [newEventFileType, setNewEventFileType] = useState<'video' | 'photo'>('video');
+
+  // Edit Customer Modal
+  const [editingCustomer, setEditingCustomer] = useState<CustomerRequest | null>(null);
+  const [editForm, setEditForm] = useState({ name: '', phone: '', videoName: '' });
 
   // Connection Status
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ status: 'INITIALIZING', qr: null, queueLength: 0 });
@@ -92,6 +96,38 @@ const DesktopDashboard: React.FC = () => {
       setNewEventFileType('video');
       setShowCreateEvent(false);
       fetchData();
+  };
+
+  // --- EDIT MODAL HANDLERS ---
+  const openEditModal = (req: CustomerRequest) => {
+    setEditingCustomer(req);
+    setEditForm({ name: req.customerName, phone: req.phoneNumber, videoName: req.videoName });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingCustomer) return;
+    const success = await updateCustomer(editingCustomer.id, editForm.name, editForm.phone, editForm.videoName);
+    if (success) {
+        setEditingCustomer(null);
+        fetchData();
+    } else {
+        alert("Failed to update customer.");
+    }
+  };
+
+  const handleResendFromEdit = async () => {
+     if (!editingCustomer) return;
+     // First save details
+     await updateCustomer(editingCustomer.id, editForm.name, editForm.phone, editForm.videoName);
+     // Then retry
+     const res = await retryServerFile(editingCustomer.id);
+     if (res.success) {
+         setEditingCustomer(null);
+         fetchData();
+         alert("Moved to Queue for resending.");
+     } else {
+         alert("Failed to resend: " + res.message);
+     }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -281,6 +317,59 @@ const DesktopDashboard: React.FC = () => {
           </div>
       )}
 
+      {/* MODAL: Edit Customer */}
+      {editingCustomer && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+           <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm animate-in zoom-in-95">
+              <div className="flex justify-between items-center mb-4">
+                 <h3 className="text-lg font-bold">Edit Customer</h3>
+                 <button onClick={() => setEditingCustomer(null)} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5"/></button>
+              </div>
+              
+              <div className="space-y-4">
+                  <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Name</label>
+                      <input 
+                         type="text"
+                         value={editForm.name}
+                         onChange={e => setEditForm({...editForm, name: e.target.value})}
+                         className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                      />
+                  </div>
+                  <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Phone</label>
+                      <input 
+                         type="text"
+                         value={editForm.phone}
+                         onChange={e => setEditForm({...editForm, phone: e.target.value})}
+                         className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                      />
+                  </div>
+                  <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase mb-1">File Name</label>
+                      <input 
+                         type="text"
+                         value={editForm.videoName}
+                         onChange={e => setEditForm({...editForm, videoName: e.target.value})}
+                         className="w-full border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                      />
+                  </div>
+              </div>
+
+              <div className="flex justify-end gap-2 mt-6">
+                   {editingCustomer.status === 'failed' && (
+                       <button onClick={handleResendFromEdit} className="mr-auto px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 text-sm font-bold flex items-center gap-1">
+                           <RotateCw className="w-4 h-4" /> Resend
+                       </button>
+                   )}
+                   <button onClick={handleSaveEdit} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-bold flex items-center gap-1">
+                       <Save className="w-4 h-4" /> Save
+                   </button>
+              </div>
+           </div>
+        </div>
+      )}
+
       {/* QR CODE MODAL */}
       {showQr && (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
@@ -381,7 +470,11 @@ const DesktopDashboard: React.FC = () => {
                     </div>
                  ) : (
                     listData.map((req) => (
-                      <div key={req.id} className={`group p-4 rounded-xl bg-white border shadow-sm transition-all relative overflow-hidden ${activeTab === 'issues' ? 'border-red-100' : 'border-slate-100'}`}>
+                      <div 
+                        key={req.id} 
+                        onClick={() => openEditModal(req)}
+                        className={`group p-4 rounded-xl bg-white border shadow-sm transition-all relative overflow-hidden cursor-pointer hover:shadow-md ${activeTab === 'issues' ? 'border-red-100' : 'border-slate-100'}`}
+                      >
                         <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity ${activeTab === 'issues' ? 'bg-red-500' : activeTab === 'sent' ? 'bg-green-500' : 'bg-blue-500'}`}></div>
                         
                         <div className="flex justify-between items-start mb-1">
@@ -428,6 +521,23 @@ const DesktopDashboard: React.FC = () => {
         </div>
 
         <div className="p-4 border-t border-slate-200 bg-slate-50">
+           {activeTab === 'sent' && (
+              <button 
+                 onClick={() => downloadCSV('completed', selectedEventId)}
+                 className="flex items-center justify-center w-full py-2.5 bg-green-50 border border-green-200 hover:bg-green-100 rounded-xl text-sm font-bold text-green-700 transition-all shadow-sm mb-2"
+              >
+                  <Download className="w-3.5 h-3.5 mr-2" /> Export CSV
+              </button>
+           )}
+           {activeTab === 'issues' && (
+              <button 
+                 onClick={() => downloadCSV('failed', selectedEventId)}
+                 className="flex items-center justify-center w-full py-2.5 bg-red-50 border border-red-200 hover:bg-red-100 rounded-xl text-sm font-bold text-red-700 transition-all shadow-sm mb-2"
+              >
+                  <Download className="w-3.5 h-3.5 mr-2" /> Export CSV
+              </button>
+           )}
+
            <button onClick={() => fetchData()} disabled={isProcessingBatch} className="flex items-center justify-center w-full py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 rounded-xl text-sm font-medium text-slate-600 transition-all shadow-sm">
               <RefreshCw className={`w-3.5 h-3.5 mr-2 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
            </button>
