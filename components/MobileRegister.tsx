@@ -1,19 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { User, Video, Check, Loader2, ChevronLeft, Image as ImageIcon, Film, Calendar } from 'lucide-react';
+import { User, Video, Check, Loader2, ChevronLeft, Calendar } from 'lucide-react';
 import { registerCustomer, getEvents } from '../services/api';
 import { Link } from 'react-router-dom';
 import { Event } from '../types';
-
-const COUNTRY_CODES = [
-    { code: '+94', label: '🇱🇰' },
-    { code: '+91', label: '🇮🇳' },
-    { code: '+1', label: '🇺🇸' },
-    { code: '+44', label: '🇬🇧' },
-    { code: '+971', label: '🇦🇪' },
-    { code: '+61', label: '🇦🇺' },
-    { code: '+65', label: '🇸🇬' },
-    { code: '+60', label: '🇲🇾' },
-];
 
 const MobileRegister: React.FC = () => {
   const [formData, setFormData] = useState({ name: '', phone: '', videoName: '', fileType: 'video' as 'video'|'photo', eventId: '' });
@@ -68,8 +57,8 @@ const MobileRegister: React.FC = () => {
         cleanPhone = cleanPhone.substring(1);
     }
     
-    // Combine selected country code (removing +) with cleaned phone
-    const prefix = countryCode.replace('+', '');
+    // Combine selected country code (removing non-digits) with cleaned phone
+    const prefix = countryCode.replace(/[^0-9]/g, '');
     const finalPhone = prefix + cleanPhone;
 
     // Logic to append extension automatically
@@ -136,7 +125,7 @@ const MobileRegister: React.FC = () => {
                <User className="w-8 h-8" />
              </div>
              <h1 className="text-2xl font-bold text-slate-900">Customer Details</h1>
-             <p className="text-slate-500">Enter information to queue the file.</p>
+             <p className="text-slate-500">Enter information to queue the {formData.fileType}.</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -177,48 +166,30 @@ const MobileRegister: React.FC = () => {
 
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">WhatsApp Number</label>
-              <div className="relative group flex items-center bg-white border-2 border-slate-100 rounded-2xl focus-within:border-blue-500 focus-within:ring-4 focus-within:ring-blue-500/10 transition-all">
-                
-                <div className="absolute left-4 z-10">
-                    <select 
+              <div className="flex gap-2">
+                  <div className="relative w-24">
+                      <input 
+                        type="text" 
                         value={countryCode}
                         onChange={(e) => setCountryCode(e.target.value)}
-                        className="bg-transparent font-medium text-lg text-slate-700 outline-none appearance-none pr-1 cursor-pointer"
-                    >
-                        {COUNTRY_CODES.map(c => <option key={c.code} value={c.code}>{c.label} {c.code}</option>)}
-                    </select>
-                </div>
-
-                <input
-                  type="tel"
-                  required
-                  placeholder="77 123 4567"
-                  className="w-full pl-28 pr-4 py-4 bg-transparent text-lg font-medium placeholder:text-slate-300 focus:outline-none font-mono"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                />
+                        className="w-full h-full text-center py-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-medium placeholder:text-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none font-mono"
+                        placeholder="+94"
+                      />
+                  </div>
+                  <div className="relative group flex-1">
+                    <input
+                      type="tel"
+                      required
+                      placeholder="77 123 4567"
+                      className="w-full px-4 py-4 bg-white border-2 border-slate-100 rounded-2xl text-lg font-medium placeholder:text-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none font-mono"
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    />
+                  </div>
               </div>
             </div>
 
-            <div className="space-y-2">
-               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">File Type</label>
-               <div className="grid grid-cols-2 gap-3">
-                   <button
-                     type="button"
-                     onClick={() => setFormData({...formData, fileType: 'video'})}
-                     className={`py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-medium transition-all ${formData.fileType === 'video' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/30' : 'bg-white border-2 border-slate-100 text-slate-600'}`}
-                   >
-                       <Film className="w-5 h-5" /> Video (.mp4)
-                   </button>
-                   <button
-                     type="button"
-                     onClick={() => setFormData({...formData, fileType: 'photo'})}
-                     className={`py-3 px-4 rounded-xl flex items-center justify-center gap-2 font-medium transition-all ${formData.fileType === 'photo' ? 'bg-purple-600 text-white shadow-lg shadow-purple-500/30' : 'bg-white border-2 border-slate-100 text-slate-600'}`}
-                   >
-                       <ImageIcon className="w-5 h-5" /> Photo (.jpg)
-                   </button>
-               </div>
-            </div>
+            {/* File Type Selection Removed - Automatically determined by Event */}
 
             <div className="space-y-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider ml-1">File Name</label>

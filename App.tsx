@@ -5,7 +5,7 @@ import DesktopDashboard from './components/DesktopDashboard';
 import Login from './components/Login';
 import { Smartphone, Monitor, ChevronRight } from 'lucide-react';
 
-const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
+const ProtectedRoute = ({ children }: { children?: React.ReactNode }) => {
     const isAuth = localStorage.getItem('isAuthenticated') === 'true';
     if (!isAuth) return <Navigate to="/login" replace />;
     return <>{children}</>;

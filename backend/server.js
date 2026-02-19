@@ -59,7 +59,8 @@ const CustomerSchema = new mongoose.Schema({
   status: { type: String, default: 'pending' },
   error: String,
   requestedAt: { type: Date, default: Date.now },
-  completedAt: Date
+  completedAt: Date,
+  filePath: String // Track file path for retention policy
 });
 const Customer = mongoose.model('Customer', CustomerSchema);
 
@@ -148,8 +149,8 @@ const processQueue = async () => {
             error: null
         });
 
-        // 4. Delete File ON SUCCESS ONLY
-        try { fs.unlinkSync(task.filePath); } catch(e) {}
+        // 4. WE DO NOT DELETE FILE HERE ANYMORE.
+        // Files are retained for 24h via scheduled task.
 
     } catch (error) {
         console.error(`❌ Send Failed for ${task.customerName}:`, error.message);
@@ -159,7 +160,6 @@ const processQueue = async () => {
             status: 'failed',
             error: error.message || 'Send Failed'
         });
-        // Note: We DO NOT delete the file on failure, so it can be retried/viewed in storage
     }
 
     isProcessingQueue = false;
@@ -210,6 +210,40 @@ const upload = multer({
         filename: (req, file, cb) => cb(null, file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_'))
     }) 
 });
+
+// --- CRON JOBS ---
+
+// Cleanup files older than 24 hours
+setInterval(async () => {
+    try {
+        const threshold = new Date(Date.now() - 24 * 60 * 60 * 1000); // 24 hours ago
+        
+        // Find completed requests older than 24h that still have a filePath
+        const oldDocs = await Customer.find({ 
+            status: 'completed', 
+            completedAt: { $lt: threshold }, 
+            filePath: { $exists: true, $ne: null } 
+        });
+
+        if (oldDocs.length > 0) {
+            console.log(`🧹 Cleaning up ${oldDocs.length} old files...`);
+            for (const doc of oldDocs) {
+                if (doc.filePath && fs.existsSync(doc.filePath)) {
+                    try {
+                        fs.unlinkSync(doc.filePath);
+                    } catch (e) {
+                        console.error(`Failed to delete file for ${doc._id}:`, e.message);
+                    }
+                }
+                // Unset filePath so we don't try again
+                doc.filePath = undefined;
+                await doc.save();
+            }
+        }
+    } catch (e) {
+        console.error("Cleanup Error:", e.message);
+    }
+}, 60 * 60 * 1000); // Run every hour
 
 // --- API ROUTES ---
 
@@ -273,6 +307,21 @@ app.post('/register-customer', async (req, res) => {
   } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
+// Update Customer Details
+app.put('/update-customer/:id', async (req, res) => {
+    try {
+        const { name, phone, videoName } = req.body;
+        await Customer.findByIdAndUpdate(req.params.id, { 
+            customerName: name, 
+            phoneNumber: phone, 
+            videoName: videoName 
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Getters (Pending, Failed, Completed)
 app.get('/get-pending', async (req, res) => {
   const query = { status: 'pending' };
@@ -327,20 +376,53 @@ app.get('/get-completed', async (req, res) => {
   })));
 });
 
+// Export CSV
+app.get('/export-csv', async (req, res) => {
+    try {
+        const { type, eventId } = req.query;
+        // type should be 'completed' or 'failed'
+        const query = { status: type };
+        if (eventId) query.eventId = eventId;
+        
+        const docs = await Customer.find(query).sort({ requestedAt: -1 });
+        
+        const fields = ['customerName', 'phoneNumber', 'videoName', 'status', 'requestedAt', 'completedAt', 'error'];
+        const csvRows = [
+            fields.join(','), // Header
+            ...docs.map(d => fields.map(f => {
+                let val = d[f] ? d[f].toString() : '';
+                val = val.replace(/"/g, '""'); // Escape double quotes
+                return `"${val}"`;
+            }).join(','))
+        ];
+        
+        const csvContent = csvRows.join('\n');
+        
+        res.header('Content-Type', 'text/csv');
+        res.attachment(`${type}_${eventId || 'all'}_${Date.now()}.csv`);
+        res.send(csvContent);
+    } catch (e) {
+        res.status(500).send("Error generating CSV");
+    }
+});
+
 // Upload & Queue
 app.post('/upload-document', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file.' });
   
   const { requestId, phoneNumber, videoName } = req.body;
   
-  // Update DB to Processing
-  await Customer.findByIdAndUpdate(requestId, { status: 'processing' });
+  // Update DB to Processing AND SAVE FILEPATH for retention
+  await Customer.findByIdAndUpdate(requestId, { 
+      status: 'processing',
+      filePath: req.file.path
+  });
 
   // Add to Queue
   messageQueue.push({
       requestId,
       phoneNumber,
-      customerName: videoName, // Using videoName as rough name if needed
+      customerName: videoName, 
       videoName,
       filePath: req.file.path
   });
@@ -386,18 +468,24 @@ app.post('/retry-request/:id', async (req, res) => {
         const doc = await Customer.findById(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Request not found' });
 
-        const files = fs.readdirSync(uploadDir);
-        // Clean matching logic
-        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const target = normalize(doc.videoName);
+        // If filePath is stored in doc, check that first
+        let filePath = doc.filePath;
         
-        const match = files.find(f => normalize(f).includes(target));
-
-        if (!match) {
-            return res.status(400).json({ error: 'Original file missing from server storage.' });
+        if (!filePath || !fs.existsSync(filePath)) {
+            // Fallback to name matching if path is missing (legacy support)
+            const files = fs.readdirSync(uploadDir);
+            const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const target = normalize(doc.videoName);
+            const match = files.find(f => normalize(f).includes(target));
+            
+            if (match) {
+                filePath = path.join(uploadDir, match);
+                // Update doc with found path
+                doc.filePath = filePath;
+            } else {
+                return res.status(400).json({ error: 'File missing from server storage.' });
+            }
         }
-
-        const filePath = path.join(uploadDir, match);
 
         // Reset Status
         doc.status = 'processing';

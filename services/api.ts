@@ -73,6 +73,17 @@ export const registerCustomer = async (name: string, phone: string, videoName: s
     } catch (error) { return false; }
 };
 
+export const updateCustomer = async (id: string, name: string, phone: string, videoName: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`${APP_CONFIG.apiBaseUrl}/update-customer/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, phone, videoName }),
+      });
+      return response.ok;
+    } catch (error) { return false; }
+};
+
 export const getPendingRequests = async (eventId?: string): Promise<CustomerRequest[]> => {
   try {
     const url = eventId ? `${APP_CONFIG.apiBaseUrl}/get-pending?eventId=${eventId}` : `${APP_CONFIG.apiBaseUrl}/get-pending`;
@@ -95,6 +106,18 @@ export const getCompletedRequests = async (eventId?: string): Promise<CustomerRe
     const response = await fetch(url);
     return response.ok ? await response.json() : [];
   } catch (error) { return []; }
+};
+
+export const downloadCSV = (type: 'completed' | 'failed', eventId?: string) => {
+    // Construct URL based on APP_CONFIG to ensure it works behind Nginx proxy or direct
+    const baseUrl = APP_CONFIG.apiBaseUrl.startsWith('/') 
+        ? `${window.location.protocol}//${window.location.host}${APP_CONFIG.apiBaseUrl}`
+        : APP_CONFIG.apiBaseUrl;
+        
+    const url = new URL(`${baseUrl}/export-csv`);
+    url.searchParams.append('type', type);
+    if (eventId) url.searchParams.append('eventId', eventId);
+    window.open(url.toString(), '_blank');
 };
 
 // --- FILES ---
