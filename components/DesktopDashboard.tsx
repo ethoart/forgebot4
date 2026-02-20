@@ -586,6 +586,11 @@ const DesktopDashboard: React.FC = () => {
                                      <RotateCw className="w-3.5 h-3.5" />
                                   </button>
                              )}
+                             {activeTab === 'sent' && req.completedAt && (new Date().getTime() - new Date(req.completedAt).getTime() < 24 * 60 * 60 * 1000) && (
+                                  <button onClick={(e) => handleRetry(req.id, e)} className="text-slate-400 hover:text-blue-500" title="Resend (Available for 24h)">
+                                     <RotateCw className="w-3.5 h-3.5" />
+                                  </button>
+                             )}
                              <button onClick={(e) => handleDeleteRequest(req.id, e)} className="text-slate-400 hover:text-red-500" title="Delete">
                                      <Trash2 className="w-3.5 h-3.5" />
                              </button>
