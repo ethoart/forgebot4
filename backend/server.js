@@ -508,7 +508,11 @@ app.post('/retry-request/:id', async (req, res) => {
             const files = fs.readdirSync(uploadDir);
             const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
             const target = normalize(doc.videoName);
-            const match = files.find(f => normalize(f).includes(target));
+            
+            // STRICT MATCH ONLY (Fixes similar name issue on retry)
+            // Note: target usually has extension (e.g. 001mp4) because Register form adds it.
+            // Multer preserves extensions on upload.
+            const match = files.find(f => normalize(f) === target);
             
             if (match) {
                 filePath = path.join(uploadDir, match);

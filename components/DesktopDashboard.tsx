@@ -237,14 +237,20 @@ const DesktopDashboard: React.FC = () => {
 
     for (const file of fileList) {
         const rawFileName = file.name;
+        // Strip extension (e.g. .mp4, .JPG)
         const nameWithoutExt = rawFileName.substring(0, rawFileName.lastIndexOf('.')) || rawFileName;
         const normFileName = normalize(nameWithoutExt);
 
         const match = requests.find(r => {
             if (r.status !== 'pending' || queuedIds.has(r.id)) return false;
             
-            const normVideoName = normalize(r.videoName.substring(0, r.videoName.lastIndexOf('.')) || r.videoName);
-            return normFileName.includes(normVideoName) || normVideoName.includes(normFileName);
+            // Strip extension from request videoName as well
+            const rName = r.videoName;
+            const rNameWithoutExt = rName.substring(0, rName.lastIndexOf('.')) || rName;
+            const normVideoName = normalize(rNameWithoutExt);
+            
+            // STRICT MATCH ONLY: Prevent partial matches (e.g. "001" matching "0012")
+            return normFileName === normVideoName;
         });
 
         if (match) {
