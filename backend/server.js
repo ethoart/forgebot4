@@ -78,7 +78,8 @@ let isProcessingQueue = false;
 
 // Random Delay Helper (Human Behavior)
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-const getRandomDelay = () => Math.floor(Math.random() * (15000 - 5000 + 1) + 5000); // 5s to 15s
+// Increased to 10s - 25s for safety
+const getRandomDelay = () => Math.floor(Math.random() * (25000 - 10000 + 1) + 10000);
 
 const cleanUpLocks = (dir) => {
     if (!fs.existsSync(dir)) return;

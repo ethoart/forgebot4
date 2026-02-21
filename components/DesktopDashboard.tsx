@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save, MessageSquare } from 'lucide-react';
 import { CustomerRequest, Event } from '../types';
 import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer, updateEvent, deleteEvent } from '../services/api';
@@ -39,12 +39,15 @@ const DesktopDashboard: React.FC = () => {
   const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0, successes: 0, failed: 0, unmatched: 0 });
   const [lastBatchReport, setLastBatchReport] = useState<{ message: string, type: 'success' | 'warning' } | null>(null);
 
+  // Queue System for Continuous Uploads
+  const fileQueueRef = useRef<{ file: File, request: CustomerRequest }[]>([]);
+  const isUploadingRef = useRef(false);
+
   const [searchTerm, setSearchTerm] = useState('');
   const navigate = useNavigate();
 
   const fetchData = useCallback(async () => {
-    if (isProcessingBatch) return;
-
+    // Allowed to run during uploads for live feedback
     setIsLoading(true);
     
     // Fetch Events first
@@ -65,7 +68,7 @@ const DesktopDashboard: React.FC = () => {
     setServerFiles(files);
     
     setIsLoading(false);
-  }, [isProcessingBatch, selectedEventId]);
+  }, [selectedEventId]);
 
   // Status Polling
   useEffect(() => {
@@ -164,6 +167,54 @@ const DesktopDashboard: React.FC = () => {
      }
   };
 
+  // --- BATCH PROCESSOR ---
+  const processFileQueue = async () => {
+      if (isUploadingRef.current) return; // Already running
+      isUploadingRef.current = true;
+      setIsProcessingBatch(true);
+      setLastBatchReport(null);
+
+      const CONCURRENCY_LIMIT = 10; // High speed uploading
+
+      while (fileQueueRef.current.length > 0) {
+          // Take next batch
+          const tasks = fileQueueRef.current.splice(0, CONCURRENCY_LIMIT);
+          
+          await Promise.all(tasks.map(async (task) => {
+              const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
+              
+              setBatchProgress(prev => ({
+                 ...prev,
+                 current: prev.current + 1,
+                 successes: prev.successes + (success ? 1 : 0),
+                 failed: prev.failed + (success ? 0 : 1)
+              }));
+          }));
+
+          // Trigger refresh to show items moving from Queue to Processing
+          fetchData(); 
+      }
+
+      isUploadingRef.current = false;
+      setIsProcessingBatch(false);
+
+      // Report
+      setBatchProgress(prev => {
+          const message = `Completed: ${prev.successes} | Unmatched: ${prev.unmatched} | Errors: ${prev.failed}`;
+          const type = (prev.failed > 0 || prev.unmatched > 0) ? 'warning' : 'success';
+          setLastBatchReport({ message, type });
+          return prev;
+      });
+
+      // Auto-clear report after 8s if no new uploads start
+      setTimeout(() => {
+          if (!isUploadingRef.current) {
+              setLastBatchReport(null);
+              setBatchProgress({ current: 0, total: 0, successes: 0, failed: 0, unmatched: 0 });
+          }
+      }, 8000);
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -174,91 +225,49 @@ const DesktopDashboard: React.FC = () => {
         return;
     }
 
-    setIsProcessingBatch(true);
-    setLastBatchReport(null);
     const fileList = Array.from(files) as File[];
-    
-    // Reset stats
-    setBatchProgress({ current: 0, total: fileList.length, successes: 0, failed: 0, unmatched: 0 });
+    e.target.value = ''; // Reset immediately to allow continuous adds
 
-    const usedRequestIds = new Set<string>();
-    const tasks: { file: File, request: CustomerRequest }[] = [];
+    const newTasks: { file: File, request: CustomerRequest }[] = [];
     let unmatchedCount = 0;
+    
+    // We match against pending requests. 
+    // To avoid duplicates in current session, we also check what's already in the queueRef.
+    const queuedIds = new Set(fileQueueRef.current.map(t => t.request.id));
 
-    // 1. Prepare Tasks (Match files to requests)
     for (const file of fileList) {
         const rawFileName = file.name;
         const nameWithoutExt = rawFileName.substring(0, rawFileName.lastIndexOf('.')) || rawFileName;
         const normFileName = normalize(nameWithoutExt);
 
-        // Find match in queue
-        // We match if the file name is contained in the requested video name OR vice versa
-        // Important: check if extension matches request type? 
-        // For now, loose matching on name is usually sufficient, but let's prioritize correct pending requests
         const match = requests.find(r => {
-            if (usedRequestIds.has(r.id) || r.status !== 'pending') return false;
+            if (r.status !== 'pending' || queuedIds.has(r.id)) return false;
+            
             const normVideoName = normalize(r.videoName.substring(0, r.videoName.lastIndexOf('.')) || r.videoName);
             return normFileName.includes(normVideoName) || normVideoName.includes(normFileName);
         });
 
         if (match) {
-            usedRequestIds.add(match.id);
-            tasks.push({ file, request: match });
+            queuedIds.add(match.id);
+            newTasks.push({ file, request: match });
         } else {
             unmatchedCount++;
         }
     }
-    
-    setBatchProgress(prev => ({ ...prev, unmatched: unmatchedCount }));
 
-    // 2. Execute with High-Speed Dynamic Concurrency Pool
-    const CONCURRENCY_LIMIT = 8;
-    let processedCount = 0;
-    let successCount = 0;
-    let failCount = 0;
+    // Update Progress State (Cumulative)
+    setBatchProgress(prev => ({
+        ...prev,
+        total: prev.total + newTasks.length + unmatchedCount,
+        unmatched: prev.unmatched + unmatchedCount,
+        current: prev.current + unmatchedCount // Unmatched are considered "processed/skipped" instantly
+    }));
 
-    const activePromises = new Set<Promise<void>>();
+    // Add valid tasks to queue
+    fileQueueRef.current.push(...newTasks);
 
-    for (const task of tasks) {
-        const promise = (async () => {
-            const success = await uploadDocument(task.request.id, task.file, task.request.phoneNumber);
-            if (success) successCount++;
-            else failCount++;
-            processedCount++;
-            
-            setBatchProgress(prev => ({
-                 ...prev,
-                 current: processedCount + unmatchedCount,
-                 successes: successCount,
-                 failed: failCount
-            }));
-        })();
-
-        activePromises.add(promise);
-        promise.then(() => activePromises.delete(promise));
-
-        if (activePromises.size >= CONCURRENCY_LIMIT) {
-            await Promise.race(activePromises);
-        }
-    }
-
-    await Promise.all(activePromises);
-
-    const totalProcessed = tasks.length + unmatchedCount;
-    setBatchProgress(prev => ({ ...prev, current: totalProcessed, successes: successCount, failed: failCount, unmatched: unmatchedCount }));
-
-    const message = `Queued: ${successCount} | Unmatched: ${unmatchedCount} | Errors: ${failCount}`;
-    const type = (failCount > 0 || unmatchedCount > 0) ? 'warning' : 'success';
-    
-    setLastBatchReport({ message, type });
-    setIsProcessingBatch(false);
-    fetchData(); 
-    e.target.value = '';
-    
-    setTimeout(() => {
-      setLastBatchReport(null);
-      setBatchProgress({ current: 0, total: 0, successes: 0, failed: 0, unmatched: 0 });
-    }, 10000);
+    // Start processor if not running
+    processFileQueue();
   };
 
   const handleRetry = async (id: string, e: React.MouseEvent) => {
@@ -644,7 +653,7 @@ const DesktopDashboard: React.FC = () => {
               </button>
            )}
 
-           <button onClick={() => fetchData()} disabled={isProcessingBatch} className="flex items-center justify-center w-full py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 rounded-xl text-sm font-medium text-slate-600 transition-all shadow-sm">
+           <button onClick={() => fetchData()} className="flex items-center justify-center w-full py-2.5 bg-white border border-slate-200 hover:border-slate-300 hover:bg-slate-50 rounded-xl text-sm font-medium text-slate-600 transition-all shadow-sm">
               <RefreshCw className={`w-3.5 h-3.5 mr-2 ${isLoading ? 'animate-spin' : ''}`} /> Refresh
            </button>
         </div>
@@ -723,9 +732,8 @@ const DesktopDashboard: React.FC = () => {
                   <input 
                     type="file" 
                     multiple 
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-40 disabled:cursor-not-allowed"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-40"
                     onChange={handleFileChange}
-                    disabled={isProcessingBatch}
                     accept="video/*,application/pdf,image/*"
                   />
                   
@@ -737,6 +745,7 @@ const DesktopDashboard: React.FC = () => {
                           <div className="h-full bg-blue-500 transition-all duration-300 ease-out" style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }} />
                        </div>
                        <p className="text-slate-500 mt-3 font-mono text-sm">{batchProgress.current} / {batchProgress.total} Files</p>
+                       <p className="text-xs text-blue-400 mt-2">You can continue dropping files...</p>
                     </div>
                   ) : lastBatchReport ? (
                     <div className="flex flex-col items-center animate-in fade-in zoom-in-95 duration-300">
@@ -755,7 +764,7 @@ const DesktopDashboard: React.FC = () => {
                       </div>
                       <h3 className="text-2xl font-bold text-slate-800 mb-2">Drag & Drop Files</h3>
                       <p className="text-slate-500 text-sm max-w-sm text-center px-4 leading-relaxed">
-                         Videos and Photos match automatically. <br/>Sent via safe queue (5-15s delay). <br/>Ensure WhatsApp is <b>Connected</b>.
+                         Videos and Photos match automatically. <br/>Sent via safe queue (10-25s delay). <br/>Ensure WhatsApp is <b>Connected</b>.
                       </p>
                     </>
                   )}
