@@ -9,6 +9,15 @@ import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
 
+// --- GLOBAL CRASH PREVENTION ---
+// Prevents Node.js from crashing completely if an unexpected error occurs
+process.on('uncaughtException', (err) => {
+    console.error('🚨 Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🚨 Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // --- CONFIGURATION ---
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -130,19 +139,41 @@ const processQueue = async () => {
             throw new Error("File not found on server (maybe deleted?)");
         }
 
-        const media = MessageMedia.fromFilePath(task.filePath);
-        // Explicitly set filename ensures it sends correctly as a document
-        if (!media.filename) {
-            media.filename = task.videoName || path.basename(task.filePath);
-        }
-        
-        // Use custom caption if available, otherwise default
-        const caption = task.caption || `Hello ${task.customerName}! Here is your document: ${task.videoName}`;
+        // --- ANTI-BAN MEASURES ---
+        try {
+            // 2a. Check if number exists to avoid spamming invalid numbers (high ban risk)
+            const isRegistered = await client.isRegisteredUser(chatId);
+            if (!isRegistered) {
+                throw new Error("Number is not registered on WhatsApp");
+            }
 
-        await client.sendMessage(chatId, media, {
-            caption: caption,
-            sendMediaAsDocument: true
-        });
+            // 2b. Simulate human presence
+            await client.sendPresenceAvailable();
+            await wait(1500);
+
+            // 2c. Simulate typing
+            const chat = await client.getChatById(chatId);
+            await chat.sendStateTyping();
+            
+            // Wait while "typing" (mimic human typing speed)
+            const caption = task.caption || `Hello ${task.customerName}! Here is your document: ${task.videoName}`;
+            const typingDelay = Math.min(caption.length * 50, 4000); // 50ms per char, max 4s
+            await wait(typingDelay);
+            await chat.clearState();
+
+            // 2d. Send the message
+            const media = MessageMedia.fromFilePath(task.filePath);
+            if (!media.filename) {
+                media.filename = task.videoName || path.basename(task.filePath);
+            }
+
+            await client.sendMessage(chatId, media, {
+                caption: caption,
+                sendMediaAsDocument: true
+            });
+        } catch (innerError) {
+            throw innerError; // Pass to outer catch block
+        }
 
         console.log(`✅ Sent to ${task.customerName}`);
 
@@ -180,7 +211,13 @@ const initializeClient = async () => {
                 '--disable-dev-shm-usage', 
                 '--disable-gpu',
                 '--disable-software-rasterizer',
-                '--disable-extensions'
+                '--disable-extensions',
+                '--single-process', // CRITICAL for t3.small (2GB RAM)
+                '--no-zygote',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-ipc-flooding-protection'
             ],
             timeout: 0 // Disable timeout for heavy media operations
         },
