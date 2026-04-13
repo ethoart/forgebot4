@@ -40,6 +40,13 @@ export const getWhatsAppStatus = async (): Promise<WhatsAppStatus> => {
   }
 };
 
+export const resetWhatsApp = async (): Promise<boolean> => {
+    try {
+        const res = await fetch(`${APP_CONFIG.apiBaseUrl}/reset-whatsapp`, { method: 'POST' });
+        return res.ok;
+    } catch (e) { return false; }
+};
+
 // --- EVENTS ---
 
 export const getEvents = async (): Promise<Event[]> => {

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save, MessageSquare } from 'lucide-react';
+import { UploadCloud, CheckCircle, RefreshCw, FileVideo, Loader2, Search, ArrowLeft, Filter, Layers, AlertCircle, HardDrive, Trash2, Send, Wifi, WifiOff, QrCode, LogOut, RotateCw, Calendar, Plus, Image as ImageIcon, Film, Download, Edit2, X, Save, MessageSquare, Power } from 'lucide-react';
 import { CustomerRequest, Event } from '../types';
-import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer, updateEvent, deleteEvent } from '../services/api';
+import { getPendingRequests, getFailedRequests, uploadDocument, getServerFiles, deleteServerFile, retryServerFile, deleteRequest, ServerFile, getWhatsAppStatus, WhatsAppStatus, getEvents, createEvent, getCompletedRequests, downloadCSV, updateCustomer, updateEvent, deleteEvent, resetWhatsApp } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
 type TabView = 'queue' | 'issues' | 'sent' | 'storage';
@@ -33,6 +33,7 @@ const DesktopDashboard: React.FC = () => {
   // Connection Status
   const [waStatus, setWaStatus] = useState<WhatsAppStatus>({ status: 'INITIALIZING', qr: null, queueLength: 0 });
   const [showQr, setShowQr] = useState(false);
+  const [isResettingWa, setIsResettingWa] = useState(false);
 
   // Batch Upload States
   const [isProcessingBatch, setIsProcessingBatch] = useState(false);
@@ -93,6 +94,14 @@ const DesktopDashboard: React.FC = () => {
   const handleLogout = () => {
       localStorage.removeItem('isAuthenticated');
       navigate('/login');
+  };
+
+  const handleResetWhatsApp = async () => {
+      if (!window.confirm("Are you sure you want to disconnect WhatsApp? This will kill the browser and require you to scan a new QR code.")) return;
+      setIsResettingWa(true);
+      await resetWhatsApp();
+      // The polling will automatically pick up the new status
+      setTimeout(() => setIsResettingWa(false), 5000); // Re-enable button after 5s
   };
 
   const handleCreateEvent = async (e: React.FormEvent) => {
@@ -496,7 +505,12 @@ const DesktopDashboard: React.FC = () => {
                   <h2 className="text-xl font-bold mb-2">Connect WhatsApp</h2>
                   <p className="text-sm text-slate-500 mb-6">Open WhatsApp &gt; Linked Devices &gt; Link a Device</p>
                   <div className="bg-slate-100 p-4 rounded-xl aspect-square flex items-center justify-center mb-4">
-                      {waStatus.status === 'QR_READY' && waStatus.qr ? (
+                      {isResettingWa ? (
+                          <div className="flex flex-col items-center text-slate-400">
+                              <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                              <span>Resetting WhatsApp...</span>
+                          </div>
+                      ) : waStatus.status === 'QR_READY' && waStatus.qr ? (
                           <img src={waStatus.qr} alt="Scan QR" className="w-full h-full object-contain" />
                       ) : waStatus.status === 'READY' || waStatus.status === 'AUTHENTICATED' ? (
                           <div className="flex flex-col items-center text-green-600">
@@ -510,7 +524,17 @@ const DesktopDashboard: React.FC = () => {
                           </div>
                       )}
                   </div>
-                  <button onClick={() => setShowQr(false)} className="w-full py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium">Close</button>
+                  
+                  <div className="flex gap-2">
+                      <button 
+                          onClick={handleResetWhatsApp} 
+                          disabled={isResettingWa}
+                          className="flex-1 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                          <Power className="w-4 h-4" /> Disconnect
+                      </button>
+                      <button onClick={() => setShowQr(false)} className="flex-1 py-2 bg-slate-100 hover:bg-slate-200 rounded-lg text-sm font-medium">Close</button>
+                  </div>
               </div>
           </div>
       )}

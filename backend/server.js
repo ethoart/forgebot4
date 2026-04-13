@@ -249,6 +249,28 @@ const initializeClient = async () => {
     try { await client.initialize(); } catch (err) { setTimeout(initializeClient, 10000); }
 };
 
+const resetWhatsAppClient = async () => {
+    console.log('🔄 Manual reset triggered. Destroying client...');
+    clientStatus = 'INITIALIZING';
+    qrCodeData = null;
+    
+    if (client) {
+        try { await client.destroy(); } catch(e) { console.error('Error destroying client:', e.message); }
+    }
+    
+    // Kill zombie chromium processes
+    exec('pkill -u $(whoami) -f chromium 2>/dev/null || true', () => {
+        console.log('🧹 Cleaned up Chromium. Deleting auth folder...');
+        // Delete auth folder
+        if (fs.existsSync(AUTH_PATH)) {
+            fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+        }
+        
+        console.log('🚀 Re-initializing client...');
+        initializeClient();
+    });
+};
+
 initializeClient();
 
 const upload = multer({ 
@@ -304,6 +326,16 @@ app.post('/login', (req, res) => {
 // Status
 app.get('/status', (req, res) => {
     res.json({ status: clientStatus, qr: qrCodeData, queueLength: messageQueue.length });
+});
+
+// Reset WhatsApp
+app.post('/reset-whatsapp', async (req, res) => {
+    try {
+        await resetWhatsAppClient();
+        res.json({ success: true, message: 'WhatsApp resetting. Please wait for new QR.' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // Events
