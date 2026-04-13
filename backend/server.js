@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
 import pkg from 'whatsapp-web.js';
 const { Client, LocalAuth, MessageMedia } = pkg;
 import qrcode from 'qrcode';
@@ -233,8 +234,16 @@ const initializeClient = async () => {
     });
     client.on('authenticated', () => { clientStatus = 'AUTHENTICATED'; });
     client.on('disconnected', () => { 
+        console.log('❌ Client Disconnected. Cleaning up before restart...');
         clientStatus = 'DISCONNECTED'; 
-        setTimeout(() => { try { client.destroy(); } catch(e){} initializeClient(); }, 5000); 
+        try { client.destroy(); } catch(e){} 
+        
+        // CRITICAL FIX: Force kill zombie Chromium processes that lock up the server
+        // Added 2>/dev/null to hide "Operation not permitted" for processes owned by root/system
+        exec('pkill -u $(whoami) -f chromium 2>/dev/null || true', () => {
+            console.log('🧹 Cleaned up zombie Chromium processes.');
+            setTimeout(initializeClient, 15000); // Increased delay to 15s to let CPU rest
+        });
     });
 
     try { await client.initialize(); } catch (err) { setTimeout(initializeClient, 10000); }
