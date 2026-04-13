@@ -78,7 +78,7 @@ const Customer = mongoose.model('Customer', CustomerSchema);
 connectWithRetry();
 
 // --- WHATSAPP CLIENT & QUEUE ---
-const AUTH_PATH = '/app/wwebjs_auth';
+const AUTH_PATH = path.join(__dirname, '.wwebjs_auth');
 const uploadDir = path.join(__dirname, 'uploads');
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -255,6 +255,8 @@ const resetWhatsAppClient = async () => {
     qrCodeData = null;
     
     if (client) {
+        // CRITICAL: Remove listeners so the 'disconnected' event doesn't fire and cause a double-restart
+        client.removeAllListeners();
         try { await client.destroy(); } catch(e) { console.error('Error destroying client:', e.message); }
     }
     
@@ -262,12 +264,16 @@ const resetWhatsAppClient = async () => {
     exec('pkill -u $(whoami) -f chromium 2>/dev/null || true', () => {
         console.log('🧹 Cleaned up Chromium. Deleting auth folder...');
         // Delete auth folder
-        if (fs.existsSync(AUTH_PATH)) {
-            fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+        try {
+            if (fs.existsSync(AUTH_PATH)) {
+                fs.rmSync(AUTH_PATH, { recursive: true, force: true });
+            }
+        } catch (e) {
+            console.error('Error deleting auth folder:', e.message);
         }
         
         console.log('🚀 Re-initializing client...');
-        initializeClient();
+        setTimeout(initializeClient, 3000); // 3 second delay to ensure ports and files are freed
     });
 };
 
